@@ -218,7 +218,7 @@ API keys must never be exposed in frontend bundles.
 Suggested structure:
 
 ```text
-spatial-studio/
+call-and-response/
 ├── AGENTS.md
 ├── TECHNICAL_PLAN.md
 ├── INTERACTION_SPEC.md
