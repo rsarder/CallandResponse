@@ -1,29 +1,32 @@
 import { create } from 'zustand';
 import {
   applyTransaction, emptyScene, SceneDocumentSchema, type BoxFace, type SceneDocument,
-  type SceneObject, type SceneOperation, type SceneTransaction,
+  type SceneObject, type SceneOperation, type SceneTransaction, type Vec3,
 } from '@call-and-response/shared';
 
 export type WorkspaceMode = 'object' | 'shape' | 'view';
 export type ObjectTool = 'select' | 'move' | 'rotate' | 'scale';
 export type AxisLock = 'x' | 'y' | 'z' | null;
 export type CameraAction = 'reset' | 'focus' | 'front' | 'top' | 'right' | 'perspective';
+export interface BooleanPreviewState { kind: 'union' | 'subtract'; targetId: string; cutterId: string; vertices: Vec3[]; triangles: [number, number, number][] }
 
 interface EditorState {
   scene: SceneDocument;
   past: SceneDocument[];
   future: SceneDocument[];
   selectedId: string | null;
+  selectedIds: string[];
   selectedFace: BoxFace | null;
   mode: WorkspaceMode;
   tool: ObjectTool;
   axisLock: AxisLock;
   preview: SceneObject | null;
+  booleanPreview: BooleanPreviewState | null;
   error: string | null;
   cameraAction: CameraAction;
   cameraSeq: number;
   cancelSeq: number;
-  select: (id: string | null) => void;
+  select: (id: string | null, additive?: boolean) => void;
   setFace: (face: BoxFace | null) => void;
   setMode: (mode: WorkspaceMode) => void;
   setTool: (tool: ObjectTool) => void;
@@ -32,7 +35,9 @@ interface EditorState {
   cancel: () => void;
   setError: (error: string | null) => void;
   previewOperation: (operation: SceneOperation) => void;
+  previewOperations: (operations: SceneOperation[]) => void;
   clearPreview: () => void;
+  setBooleanPreview: (preview: BooleanPreviewState | null) => void;
   transact: (operations: SceneOperation[], source: SceneTransaction['source']) => boolean;
   undo: () => void;
   redo: () => void;
@@ -45,32 +50,43 @@ function describeError(error: unknown): string {
 }
 
 export const useEditor = create<EditorState>((set, get) => ({
-  scene: emptyScene(), past: [], future: [], selectedId: null, selectedFace: null,
-  mode: 'object', tool: 'select', axisLock: null, preview: null, error: null,
+  scene: emptyScene(), past: [], future: [], selectedId: null, selectedIds: [], selectedFace: null,
+  mode: 'object', tool: 'select', axisLock: null, preview: null, booleanPreview: null, error: null,
   cameraAction: 'reset', cameraSeq: 0, cancelSeq: 0,
-  select: selectedId => set({ selectedId, selectedFace: null, preview: null }),
+  select: (selectedId, additive = false) => set(state => {
+    if (!selectedId) return { selectedId: null, selectedIds: [], selectedFace: null, preview: null, booleanPreview: null };
+    const selectedIds = additive
+      ? state.selectedIds.includes(selectedId) ? state.selectedIds.filter(id => id !== selectedId) : [...state.selectedIds, selectedId]
+      : [selectedId];
+    return { selectedId: selectedIds.at(-1) ?? null, selectedIds, selectedFace: null, preview: null, booleanPreview: null };
+  }),
   setFace: selectedFace => set({ selectedFace }),
-  setMode: mode => set(state => ({ mode, selectedFace: null, preview: null, cancelSeq: state.cancelSeq + 1 })),
-  setTool: tool => set(state => ({ tool, preview: null, cancelSeq: state.cancelSeq + 1 })),
+  setMode: mode => set(state => ({ mode, selectedFace: null, preview: null, booleanPreview: null, cancelSeq: state.cancelSeq + 1 })),
+  setTool: tool => set(state => ({ tool, preview: null, booleanPreview: null, cancelSeq: state.cancelSeq + 1 })),
   setAxisLock: axisLock => set({ axisLock }),
   camera: cameraAction => set(state => ({ cameraAction, cameraSeq: state.cameraSeq + 1 })),
-  cancel: () => set(state => ({ preview: null, selectedFace: null, cancelSeq: state.cancelSeq + 1 })),
+  cancel: () => set(state => ({ preview: null, booleanPreview: null, selectedFace: null, cancelSeq: state.cancelSeq + 1 })),
   setError: error => set({ error }),
   previewOperation: operation => {
+    get().previewOperations([operation]);
+  },
+  previewOperations: operations => {
     try {
       const { scene } = get();
-      const result = applyTransaction(scene, { expectedRevision: scene.revision, source: 'mouse', operations: [operation] });
-      set({ preview: result.objects.find(o => o.id === ('targetId' in operation ? operation.targetId : '')) ?? null, error: null });
+      const result = applyTransaction(scene, { expectedRevision: scene.revision, source: 'mouse', operations });
+      const targetId = operations.find(operation => 'targetId' in operation)?.targetId;
+      set({ preview: result.objects.find(o => o.id === targetId) ?? null, error: null });
     } catch (error) {
       set({ error: describeError(error) });
     }
   },
   clearPreview: () => set({ preview: null }),
+  setBooleanPreview: booleanPreview => set({ booleanPreview }),
   transact: (operations, source) => {
     try {
       const { scene, past } = get();
       const next = applyTransaction(scene, { expectedRevision: scene.revision, source, operations });
-      set({ scene: next, past: [...past, scene].slice(-100), future: [], preview: null, error: null });
+      set({ scene: next, past: [...past, scene].slice(-100), future: [], preview: null, booleanPreview: null, error: null });
       return true;
     } catch (error) {
       set({ preview: null, error: describeError(error) });
@@ -82,8 +98,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!previous) return state;
     return {
       scene: { ...previous, revision: state.scene.revision + 1 }, past: state.past.slice(0, -1),
-      future: [...state.future, state.scene], preview: null, error: null,
+      future: [...state.future, state.scene], preview: null, booleanPreview: null, error: null,
       selectedId: previous.objects.some(o => o.id === state.selectedId) ? state.selectedId : null,
+      selectedIds: state.selectedIds.filter(id => previous.objects.some(o => o.id === id)),
       selectedFace: null, cancelSeq: state.cancelSeq + 1,
     };
   }),
@@ -92,8 +109,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!next) return state;
     return {
       scene: { ...next, revision: state.scene.revision + 1 }, past: [...state.past, state.scene],
-      future: state.future.slice(0, -1), preview: null, error: null,
+      future: state.future.slice(0, -1), preview: null, booleanPreview: null, error: null,
       selectedId: next.objects.some(o => o.id === state.selectedId) ? state.selectedId : null,
+      selectedIds: state.selectedIds.filter(id => next.objects.some(o => o.id === id)),
       selectedFace: null, cancelSeq: state.cancelSeq + 1,
     };
   }),
@@ -104,7 +122,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       set({
         scene: { ...parsed, revision: Math.max(scene.revision, parsed.revision) + 1 },
         past: [...past, scene].slice(-100), future: [], selectedId: null, selectedFace: null,
-        preview: null, error: null,
+        preview: null, booleanPreview: null, error: null, selectedIds: [],
       });
       return true;
     } catch (error) {

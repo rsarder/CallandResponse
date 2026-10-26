@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { Euler, Quaternion, MathUtils } from 'three';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { Euler, Matrix4, Quaternion, MathUtils, Vector3 } from 'three';
 import { parseSceneJson, type SceneObject, type SceneOperation, type Vec3 } from '@call-and-response/shared';
+import { booleanMesh, intersectingPairs, worldMatrixFor, type BooleanKind } from './geometry/csg';
 import { Viewport } from './scene/Viewport';
 import { useEditor, type ObjectTool, type WorkspaceMode } from './state/editor';
 
@@ -12,22 +13,75 @@ const tools: { id: ObjectTool; label: string; key: string; icon: string }[] = [
   { id: 'rotate', label: 'Rotate', key: 'E', icon: '⟳' }, { id: 'scale', label: 'Scale', key: 'R', icon: '⤢' },
 ];
 
-function createPrimitive(kind: 'box' | 'cylinder' | 'sphere') {
+function createPrimitive(kind: 'box' | 'cylinder' | 'sphere' | 'empty') {
   const state = useEditor.getState();
   const id = crypto.randomUUID();
-  const number = state.scene.objects.filter(o => o.shape.kind === kind).length + 1;
-  const name = `${kind[0]!.toUpperCase()}${kind.slice(1)} ${number}`;
+  const prefix = kind === 'empty' ? 'EmptyObject' : `${kind[0]!.toUpperCase()}${kind.slice(1)}`;
+  const usedNames = state.scene.objects.flatMap(object => { const match = object.name.match(new RegExp(`^${prefix} (\\d+)$`)); return match ? [Number(match[1])] : []; });
+  const number = Math.max(0, ...usedNames) + 1;
+  const name = `${prefix} ${number}`;
   const base = { id, name, positionMm: [state.scene.objects.length * 55, 20, 0] as Vec3 };
-  const operation: SceneOperation = kind === 'box' ? { type: 'create_box', ...base, sizeMm: [40, 40, 40] }
+  const operation: SceneOperation = kind === 'empty' ? { type: 'create_empty', ...base }
+    : kind === 'box' ? { type: 'create_box', ...base, sizeMm: [40, 40, 40] }
     : kind === 'cylinder' ? { type: 'create_cylinder', ...base, radiusMm: 20, heightMm: 40 }
       : { type: 'create_sphere', ...base, radiusMm: 20 };
   if (state.transact([operation], 'mouse')) state.select(id);
 }
 
+function transformOperations(object: SceneObject, local: Matrix4, parentId: string | null): SceneOperation[] {
+  const position = new Vector3(); const rotation = new Quaternion(); const scale = new Vector3();
+  local.decompose(position, rotation, scale);
+  const operations: SceneOperation[] = [];
+  if (object.shape.kind === 'empty') operations.push({ type: 'set_object_scale', targetId: object.id, scaleMm: [scale.x, scale.y, scale.z] });
+  else if (object.shape.kind === 'box') operations.push({ type: 'set_box_dimensions', targetId: object.id, sizeMm: [object.shape.sizeMm[0] * scale.x, object.shape.sizeMm[1] * scale.y, object.shape.sizeMm[2] * scale.z] });
+  else if (object.shape.kind === 'cylinder') {
+    const radial = (scale.x + scale.z) / 2;
+    operations.push({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: object.shape.radiusMm * radial, heightMm: object.shape.heightMm * scale.y });
+  } else if (object.shape.kind === 'sphere') operations.push({ type: 'set_sphere_radius', targetId: object.id, radiusMm: object.shape.radiusMm * (scale.x + scale.y + scale.z) / 3 });
+  else if (object.shape.kind === 'mesh' && (Math.abs(scale.x - 1) + Math.abs(scale.y - 1) + Math.abs(scale.z - 1) > 0.0001))
+    operations.push({ type: 'set_custom_mesh', targetId: object.id, vertices: object.shape.vertices.map(([x, y, z]) => [x * scale.x, y * scale.y, z * scale.z]), triangles: object.shape.triangles });
+  operations.push({ type: 'set_object_position', targetId: object.id, positionMm: [position.x, position.y, position.z] });
+  operations.push({ type: 'rotate_object', targetId: object.id, rotation: [rotation.x, rotation.y, rotation.z, rotation.w] });
+  operations.push({ type: 'reparent_object', targetId: object.id, parentId });
+  return operations;
+}
+
+function reparentOperations(scene: ReturnType<typeof useEditor.getState>['scene'], objectId: string, parentId: string | null): SceneOperation[] {
+  const object = scene.objects.find(item => item.id === objectId);
+  if (!object) return [];
+  const world = worldMatrixFor(scene, object);
+  const parent = parentId ? scene.objects.find(item => item.id === parentId) : undefined;
+  const parentWorld = parent ? worldMatrixFor(scene, parent) : new Matrix4();
+  return transformOperations(object, parentWorld.invert().multiply(world), parentId);
+}
+
+function groupSelected() {
+  const state = useEditor.getState();
+  const chosen = state.selectedIds.length ? state.selectedIds : state.selectedId ? [state.selectedId] : [];
+  const items = chosen.map(id => state.scene.objects.find(object => object.id === id)).filter((item): item is SceneObject => Boolean(item));
+  if (!items.length) return;
+  const world = items.map(item => worldMatrixFor(state.scene, item));
+  const center = world.reduce((sum, matrix) => sum.add(new Vector3().setFromMatrixPosition(matrix)), new Vector3()).multiplyScalar(1 / world.length);
+  const emptyNumber = state.scene.objects.filter(object => object.name.startsWith('EmptyObject ')).length + 1;
+  const groupId = crypto.randomUUID();
+  const operations: SceneOperation[] = [{ type: 'create_empty', id: groupId, name: `EmptyObject ${emptyNumber}`, positionMm: [center.x, center.y, center.z] }];
+  items.forEach((object, index) => {
+    const local = world[index]!.clone();
+    local.premultiply(new Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+    operations.push(...transformOperations(object, local, groupId));
+  });
+  if (state.transact(operations, 'mouse')) state.select(groupId);
+}
+
 function deleteSelected() {
   const state = useEditor.getState();
-  if (state.mode === 'view' || !state.selectedId) return;
-  if (state.transact([{ type: 'delete_object', targetId: state.selectedId }], 'keyboard')) state.select(null);
+  if (state.mode === 'view' || !state.selectedIds.length) return;
+  const ids = new Set(state.selectedIds);
+  let grew = true;
+  while (grew) { grew = false; state.scene.objects.forEach(object => { if (object.parentId && ids.has(object.parentId) && !ids.has(object.id)) { ids.add(object.id); grew = true; } }); }
+  const depth = (id: string) => { let value = 0; let item = state.scene.objects.find(object => object.id === id); while (item?.parentId) { value++; item = state.scene.objects.find(object => object.id === item!.parentId); } return value; };
+  const operations: SceneOperation[] = [...ids].sort((a, b) => depth(b) - depth(a)).map(targetId => ({ type: 'delete_object', targetId }));
+  if (state.transact(operations, 'keyboard')) state.select(null);
 }
 
 function duplicateSelected() {
@@ -78,14 +132,15 @@ function Inspector({ object }: { object: SceneObject | undefined }) {
     <TextField value={object.name} onCommit={name => edit({ type: 'rename_object', targetId: object.id, name })} />
     <div className="object-type">{object.shape.kind} <span>·</span> {object.id.slice(0, 8)}</div>
     {selectedFace && <div className="face-readout">Face {selectedFace} selected</div>}
-    <div className="section-label section-gap">Position <small>mm</small></div>
+    <div className="section-label section-gap">{object.parentId ? 'Local position' : 'Position'} <small>mm</small></div>
     <div className="field-grid">{(['X', 'Y', 'Z'] as const).map((label, i) => <NumberField key={label} label={label} value={position[i]!} onCommit={v => {
       const next: Vec3 = [...position]; next[i] = v;
       edit({ type: 'set_object_position', targetId: object.id, positionMm: next });
     }} />)}</div>
-    <div className="section-label section-gap">Rotation <small>degrees</small></div>
+    <div className="section-label section-gap">{object.parentId ? 'Local rotation' : 'Rotation'} <small>degrees</small></div>
     <div className="field-grid">{(['X', 'Y', 'Z'] as const).map((label, i) => <NumberField key={label} label={`${label} rotation`} value={angles[i]!} onCommit={v => updateRotation(i, v)} />)}</div>
-    <div className="section-label section-gap">Dimensions <small>mm</small></div>
+    {object.shape.kind === 'empty' && <><div className="section-label section-gap">Transform scale</div><NumberField label="Uniform scale" value={object.scaleMm?.[0] ?? 1} step={0.1} onCommit={v => edit({ type: 'set_object_scale', targetId: object.id, scaleMm: [v, v, v] })} /></>}
+    {object.shape.kind !== 'empty' && object.shape.kind !== 'mesh' && <><div className="section-label section-gap">Dimensions <small>mm</small></div>
     {object.shape.kind === 'box' ? <div className="field-grid">{(['Width', 'Height', 'Depth'] as const).map((label, i) => <NumberField key={label} label={label} value={object.shape.kind === 'box' ? object.shape.sizeMm[i]! : 1} onCommit={v => {
       if (object.shape.kind !== 'box') return;
       const sizeMm: Vec3 = [...object.shape.sizeMm]; sizeMm[i] = v;
@@ -93,19 +148,37 @@ function Inspector({ object }: { object: SceneObject | undefined }) {
     }} />)}</div> : object.shape.kind === 'cylinder' ? <div className="field-grid two">
       <NumberField label="Radius" value={object.shape.radiusMm} onCommit={v => { if (object.shape.kind === 'cylinder') edit({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: v, heightMm: object.shape.heightMm }); }} />
       <NumberField label="Height" value={object.shape.heightMm} onCommit={v => { if (object.shape.kind === 'cylinder') edit({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: object.shape.radiusMm, heightMm: v }); }} />
-    </div> : <NumberField label="Radius" value={object.shape.radiusMm} onCommit={v => edit({ type: 'set_sphere_radius', targetId: object.id, radiusMm: v })} />}
-    <div className="section-label section-gap">Material</div>
+    </div> : <NumberField label="Radius" value={object.shape.kind === 'sphere' ? object.shape.radiusMm : 1} onCommit={v => { if (object.shape.kind === 'sphere') edit({ type: 'set_sphere_radius', targetId: object.id, radiusMm: v }); }} />}</>}
+    {object.material && <><div className="section-label section-gap">Material</div>
     <ColorField object={object} />
+    <OpacityField key={object.id} object={object} /></>}
     <div className="inspector-actions"><button onClick={duplicateSelected}>Duplicate</button><button className="danger" onClick={deleteSelected}>Delete</button></div>
   </fieldset>;
 }
 
 function ColorField({ object }: { object: SceneObject }) {
-  const [draft, setDraft] = useState(object.material.colorHex);
-  useEffect(() => setDraft(object.material.colorHex), [object.material.colorHex]);
+  const colorHex = object.material?.colorHex ?? '#ffffff';
+  const [draft, setDraft] = useState(colorHex);
+  useEffect(() => setDraft(colorHex), [colorHex]);
   return <div className="color-field"><input type="color" aria-label="Object color" value={draft} onChange={e => setDraft(e.target.value)} onBlur={() => {
-    if (draft !== object.material.colorHex) useEditor.getState().transact([{ type: 'set_material_color', targetId: object.id, colorHex: draft }], 'numeric');
+    if (draft !== colorHex) useEditor.getState().transact([{ type: 'set_material_color', targetId: object.id, colorHex: draft }], 'numeric');
   }} /><span>{draft.toUpperCase()}</span></div>;
+}
+
+function OpacityField({ object }: { object: SceneObject }) {
+  const opacityValue = object.material?.opacity ?? 0.5;
+  const [draft, setDraft] = useState(Math.round(opacityValue * 100));
+  useEffect(() => setDraft(Math.round(opacityValue * 100)), [object.id, opacityValue]);
+  const commit = (value: number) => {
+    const opacity = Math.max(0, Math.min(100, value)) / 100;
+    if (Math.abs(opacity - opacityValue) > 0.0001)
+      useEditor.getState().transact([{ type: 'set_material_opacity', targetId: object.id, opacity }], 'numeric');
+  };
+  return <label className="opacity-field"><span>Opacity <small>{draft}%</small></span><input aria-label="Object opacity" type="range" min="0" max="100" step="1" value={draft} onChange={e => setDraft(Number(e.target.value))} onPointerUp={() => commit(draft)} onKeyUp={() => commit(draft)} onWheel={event => {
+    event.preventDefault();
+    const next = Math.max(0, Math.min(100, draft + (event.deltaY < 0 ? 5 : -5)));
+    setDraft(next); commit(next);
+  }} /></label>;
 }
 
 function saveProject() {
@@ -149,15 +222,59 @@ export function App() {
   useKeyboard();
   const fileRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextMenu(null); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, []);
   const scene = useEditor(s => s.scene);
   const mode = useEditor(s => s.mode);
   const tool = useEditor(s => s.tool);
   const selectedId = useEditor(s => s.selectedId);
+  const selectedIds = useEditor(s => s.selectedIds);
   const axisLock = useEditor(s => s.axisLock);
   const error = useEditor(s => s.error);
   const past = useEditor(s => s.past);
   const future = useEditor(s => s.future);
   const selected = scene.objects.find(o => o.id === selectedId);
+  const overlapPairs = useMemo(() => intersectingPairs(scene), [scene]);
+  const overlapping = useMemo(() => new Set(overlapPairs.flat()), [overlapPairs]);
+  const canBoolean = selectedIds.length === 2 && selectedIds.every(id => {
+    const item = scene.objects.find(object => object.id === id);
+    return item && item.shape.kind !== 'empty' && !scene.objects.some(child => child.parentId === id);
+  });
+  const booleanPreview = useEditor(s => s.booleanPreview);
+  const openBoolean = (kind: BooleanKind) => {
+    const state = useEditor.getState();
+    const ids = state.selectedIds.length ? state.selectedIds : state.selectedId ? [state.selectedId] : [];
+    if (ids.length !== 2 || !canBoolean) return;
+    try {
+      const result = booleanMesh(state.scene, ids[0]!, ids[1]!, kind);
+      state.setBooleanPreview({ kind, targetId: ids[0]!, cutterId: ids[1]!, ...result });
+      setContextMenu(null);
+    } catch (failure) { state.setError(failure instanceof Error ? failure.message : 'Boolean preview failed'); }
+  };
+  const confirmBoolean = () => {
+    const state = useEditor.getState(); const preview = state.booleanPreview;
+    if (!preview) return;
+    const target = state.scene.objects.find(object => object.id === preview.targetId);
+    if (!target) return;
+    const id = crypto.randomUUID();
+    const operations: SceneOperation[] = [
+      { type: 'create_mesh', id, name: `${target.name} ${preview.kind === 'union' ? 'Union' : 'Cut'}`, positionMm: [0, 0, 0], vertices: preview.vertices, triangles: preview.triangles },
+      { type: 'set_material_color', targetId: id, colorHex: target.material?.colorHex ?? '#76b7ff' },
+      { type: 'set_material_opacity', targetId: id, opacity: target.material?.opacity ?? 0.5 },
+      { type: 'delete_object', targetId: preview.targetId }, { type: 'delete_object', targetId: preview.cutterId },
+    ];
+    if (state.transact(operations, 'mouse')) { state.setBooleanPreview(null); state.select(id); }
+  };
+  const dropSelection = (parentId: string | null) => {
+    const state = useEditor.getState();
+    const ids = state.selectedIds.length ? state.selectedIds : [];
+    const operations = ids.filter(id => id !== parentId).flatMap(id => reparentOperations(state.scene, id, parentId));
+    if (operations.length) state.transact(operations, 'mouse');
+  };
   const loadFile = async (file: File | undefined) => {
     if (!file) return;
     setLoading(true);
@@ -171,7 +288,26 @@ export function App() {
       setLoading(false);
     }
   };
-  return <div className="app-shell">
+  const renderHierarchy = (parentId: string | null, depth: number): ReactNode => scene.objects.filter(object => (object.parentId ?? null) === parentId).map(object => {
+    const warning = overlapping.has(object.id);
+    const children = scene.objects.filter(child => child.parentId === object.id);
+    const onDrop = (event: DragEvent<HTMLButtonElement>) => {
+      event.preventDefault(); event.stopPropagation();
+      const box = event.currentTarget.getBoundingClientRect(); const y = event.clientY - box.top;
+      const zone = y / box.height;
+      if (zone < 0.24 || zone > 0.76) {
+        const siblings = scene.objects.filter(item => item.parentId === object.parentId && item.id !== object.id);
+        const nextId = zone < 0.24 ? object.id : siblings.find(item => scene.objects.indexOf(item) > scene.objects.indexOf(object))?.id ?? null;
+        const ids = useEditor.getState().selectedIds;
+        const ops = ids.filter(id => id !== object.id).map(targetId => ({ type: 'reorder_object', targetId, beforeId: nextId } as SceneOperation));
+        if (ops.length) useEditor.getState().transact(ops, 'mouse');
+      } else dropSelection(object.shape.kind === 'empty' ? object.id : object.parentId ?? null);
+    };
+    return <div key={object.id} className="hierarchy-node"><button draggable className={`hierarchy-row ${selectedIds.includes(object.id) ? 'selected' : ''}`} style={{ paddingLeft: `${9 + depth * 14}px` }} onClick={event => useEditor.getState().select(object.id, event.shiftKey)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (!selectedIds.includes(object.id)) useEditor.getState().select(object.id); setContextMenu({ x: event.clientX, y: event.clientY }); }} onDragStart={event => { if (!selectedIds.includes(object.id)) useEditor.getState().select(object.id); event.dataTransfer.setData('text/plain', object.id); event.dataTransfer.effectAllowed = 'move'; }} onDragOver={event => event.preventDefault()} onDrop={onDrop}>
+      <span className="hierarchy-icon">{object.shape.kind === 'box' ? '□' : object.shape.kind === 'sphere' ? '○' : object.shape.kind === 'empty' ? '◇' : object.shape.kind === 'mesh' ? 'M' : '⬡'}</span><span>{object.name}</span>{warning && <small className="overlap-warning" title="This solid intersects another object">⚠</small>}<small>{object.shape.kind}</small>
+    </button>{children.length > 0 && renderHierarchy(object.id, depth + 1)}</div>;
+  });
+  return <div className="app-shell" onClick={() => setContextMenu(null)}>
     <header className="topbar">
       <div className="brand"><div className="brand-mark"><span /></div><div><strong>Call <em>&</em> Response</strong><small>3D MODELING WORKSPACE</small></div></div>
       <div className="project-badge"><span className="status-dot" /> Local project <span className="revision">rev {scene.revision}</span></div>
@@ -189,19 +325,27 @@ export function App() {
         <div className="panel-heading"><span>WORKSPACE</span><span className="panel-index">01 / 03</span></div>
         <div className="mode-stack">{modes.map(item => <button key={item.id} className={`mode-button ${mode === item.id ? 'active' : ''}`} onClick={() => useEditor.getState().setMode(item.id)} aria-pressed={mode === item.id}><span className="mode-glyph">{item.id === 'object' ? '▣' : item.id === 'shape' ? '⬡' : '◉'}</span><span>{item.label}<small>{item.id === 'object' ? 'Transform objects' : item.id === 'shape' ? 'Edit geometry' : 'Navigate camera'}</small></span><kbd>{item.key}</kbd></button>)}</div>
         <div className="panel-heading separated"><span>ADD OBJECT</span><span className="panel-index">+</span></div>
-        <div className="primitive-list"><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}><span className="primitive-icon">▧</span>Box <span>+</span></button><button disabled={mode === 'view'} onClick={() => createPrimitive('sphere')}><span className="primitive-icon">◉</span>Sphere <span>+</span></button><button disabled={mode === 'view'} onClick={() => createPrimitive('cylinder')}><span className="primitive-icon">▤</span>Cylinder <span>+</span></button></div>
+        <div className="primitive-list"><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}><span className="primitive-icon">▧</span>Box <span>+</span></button><button disabled={mode === 'view'} onClick={() => createPrimitive('sphere')}><span className="primitive-icon">◉</span>Sphere <span>+</span></button><button disabled={mode === 'view'} onClick={() => createPrimitive('cylinder')}><span className="primitive-icon">▤</span>Cylinder <span>+</span></button><button disabled={mode === 'view'} onClick={() => createPrimitive('empty')}><span className="primitive-icon">◇</span>Empty <span>+</span></button></div>
         <div className="panel-heading separated"><span>SCENE HIERARCHY</span><span className="count">{scene.objects.length}</span></div>
-        <div className="hierarchy">{scene.objects.length ? scene.objects.map(object => <button key={object.id} className={selectedId === object.id ? 'selected' : ''} onClick={() => useEditor.getState().select(object.id)}><span className="hierarchy-icon">{object.shape.kind === 'box' ? '□' : object.shape.kind === 'sphere' ? '○' : '⬡'}</span><span>{object.name}</span><small>{object.shape.kind}</small></button>) : <p className="list-empty">Your scene is empty. Add a primitive above to begin.</p>}</div>
+        <div className="hierarchy" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); dropSelection(null); }}>
+          {scene.objects.length ? <>{renderHierarchy(null, 0)}<div className="hierarchy-root-drop" aria-label="Move to scene root">Drop here to move to scene root</div></> : <p className="list-empty">Your scene is empty. Add an object above to begin.</p>}
+        </div>
         <div className="left-footer">MM UNITS <span>·</span> Y-UP <span>·</span> OFFLINE READY</div>
       </aside>
       <main className="main-area">
         <div className="viewport-toolbar"><div className="tool-group"><span className="toolbar-label">TOOLS</span>{tools.map(item => <button key={item.id} title={`${item.label} · ${item.key}`} disabled={mode !== 'object'} className={tool === item.id && mode === 'object' ? 'active' : ''} onClick={() => useEditor.getState().setTool(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</div><div className="toolbar-end"><span className={`mode-pill mode-${mode}`}>{mode.toUpperCase()} MODE</span></div></div>
-        <div className="canvas-wrap"><Viewport />{!scene.objects.length && <div className="canvas-empty"><div className="empty-illustration">◇</div><h1>Start with a shape</h1><p>Add a primitive and begin shaping your scene.</p><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}>+ Create a box</button></div>}</div>
+        <div className="canvas-wrap"><Viewport onContextMenu={(x, y) => setContextMenu({ x, y })} />{!scene.objects.length && <div className="canvas-empty"><div className="empty-illustration">◇</div><h1>Start with a shape</h1><p>Add a primitive and begin shaping your scene.</p><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}>+ Create a box</button></div>}</div>
         <div className="camera-bar"><div className="axis-controls"><span>AXIS</span>{(['x', 'y', 'z'] as const).map(axis => <button key={axis} className={axisLock === axis ? `active axis-${axis}` : ''} onClick={() => useEditor.getState().setAxisLock(axisLock === axis ? null : axis)} aria-pressed={axisLock === axis}>{axis.toUpperCase()}</button>)}<button onClick={() => useEditor.getState().setAxisLock(null)}>Free</button></div><div className="camera-controls"><span>CAMERA</span>{(['perspective', 'front', 'top', 'right'] as const).map(action => <button key={action} onClick={() => useEditor.getState().camera(action)}>{action === 'perspective' ? 'Perspective' : action[0]!.toUpperCase() + action.slice(1)}</button>)}<button title="Focus selected · F" onClick={() => useEditor.getState().camera('focus')}>Focus</button><button onClick={() => useEditor.getState().camera('reset')}>Reset</button></div></div>
       </main>
       <aside className="right-panel"><div className="panel-heading"><span>INSPECTOR</span><span className="panel-index">PROPERTIES</span></div><Inspector object={selected} /><div className="shortcuts"><div className="panel-heading"><span>QUICK KEYS</span></div><p><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Modes</p><p><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> Tools</p><p><kbd>X</kbd><kbd>Y</kbd><kbd>Z</kbd> Axis lock</p><p><kbd>F</kbd> Focus selection</p><p><kbd>Esc</kbd> Cancel preview</p></div></aside>
     </div>
     <footer className="statusbar"><span><i className="status-dot" /> READY</span><span>{scene.objects.length} OBJECT{scene.objects.length === 1 ? '' : 'S'}</span><span>{selected ? `SELECTED: ${selected.name.toUpperCase()}` : 'NO SELECTION'}</span><span className="status-right">Call and Response · Milestone 1</span></footer>
     {error && <div className="error-toast" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => useEditor.getState().setError(null)}>×</button></div>}
+    {contextMenu && <div className="context-menu" style={{ left: `${Math.max(0, Math.min(contextMenu.x, window.innerWidth - 190))}px`, top: `${Math.max(0, Math.min(contextMenu.y, window.innerHeight - 150))}px` }} onClick={event => event.stopPropagation()}>
+      <button disabled={!selectedIds.length} onClick={() => { groupSelected(); setContextMenu(null); }}>Group</button>
+      <button disabled={!canBoolean} onClick={() => openBoolean('union')}>Union</button>
+      <button disabled={!canBoolean} onClick={() => openBoolean('subtract')}>Subtract</button>
+    </div>}
+    {booleanPreview && <div className="boolean-preview-panel" onClick={event => event.stopPropagation()}><strong>{booleanPreview.kind === 'union' ? 'Union preview' : 'Subtract preview'}</strong><span>{scene.objects.find(object => object.id === booleanPreview.targetId)?.name} {booleanPreview.kind === 'union' ? '+' : '−'} {scene.objects.find(object => object.id === booleanPreview.cutterId)?.name}</span><small>Ghost geometry shows the resulting editable mesh.</small><div><button onClick={() => useEditor.getState().setBooleanPreview(null)}>Cancel</button><button className="primary" onClick={confirmBoolean}>Apply</button></div></div>}
   </div>;
 }

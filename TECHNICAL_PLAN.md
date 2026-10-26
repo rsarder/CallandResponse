@@ -896,3 +896,22 @@ A feature is complete only when:
 - Optional CSG library: https://github.com/gkjohnson/three-bvh-csg
 
 **Core engineering principle:** The scene is a validated data model. Mouse interactions, gestures, and AI requests are different interfaces to the same deterministic modeling operations.
+
+## 21. Approved editable hierarchy and mesh extension
+
+The scene schema remains version 1 and adds backward-compatible optional fields: material opacity (effective default `0.5`), `parentId`, and `scaleMm` for Empty transforms. Empty shapes have no material. Existing version 1 files without opacity continue to load as half-opacity solids.
+
+Shapes now also include:
+
+```ts
+| { kind: 'empty' }
+| { kind: 'mesh'; vertices: Vec3[]; triangles: [number, number, number][]; editableVertices?: number[] }
+```
+
+Mesh triangles must reference distinct existing vertices and cannot be degenerate. Box corner editing converts the box to an indexed mesh with eight exposed corner handles. CSG output meshes remain transformable; they do not pretend to remain parametric primitives.
+
+Empty objects can parent scene objects. Their position and rotation are local to the parent; their transforms are inherited by descendants. Reparenting computes local transforms from world matrices, and Group creates an Empty at the selected world-space center. The inspector labels child transforms as local. Empty group scale is uniform to keep reparented transforms representable without shear.
+
+Union and subtraction use `three-bvh-csg` 0.0.17 on closed solids. The first selected object is the target and the second is the cutter. The computed mesh is previewed with source objects still visible, then applied atomically by creating one mesh object and deleting both sources. CSG failures leave sources unchanged.
+
+Opacity is a validated `[0,1]` material property and defaults to `0.5` for newly created solids. Hierarchy overlap warnings use positive-volume CSG intersection; grouped objects are checked, empties are skipped, and tangential contact is not reported.

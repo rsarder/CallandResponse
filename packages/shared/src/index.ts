@@ -13,15 +13,41 @@ export const QuatSchema = z.tuple([bounded, bounded, bounded, bounded]).refine(
 const box = z.strictObject({ kind: z.literal('box'), sizeMm: z.tuple([dimension, dimension, dimension]) });
 const cylinder = z.strictObject({ kind: z.literal('cylinder'), radiusMm: dimension, heightMm: dimension });
 const sphere = z.strictObject({ kind: z.literal('sphere'), radiusMm: dimension });
-export const ShapeSchema = z.discriminatedUnion('kind', [box, cylinder, sphere]);
+const mesh = z.strictObject({ kind: z.literal('mesh'), vertices: z.array(Vec3Schema).min(4).max(50000), triangles: z.array(z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative(), z.number().int().nonnegative()])).min(4).max(300000), editableVertices: z.array(z.number().int().nonnegative()).max(50000).optional() });
+const empty = z.strictObject({ kind: z.literal('empty') });
+export const ShapeSchema = z.discriminatedUnion('kind', [box, cylinder, sphere, mesh, empty]);
 export const SceneObjectSchema = z.strictObject({
   id: identifier, name, shape: ShapeSchema, positionMm: Vec3Schema, rotation: QuatSchema,
-  material: z.strictObject({ colorHex: color }),
-});
+  scaleMm: z.tuple([dimension, dimension, dimension]).optional(),
+  parentId: identifier.optional(),
+  material: z.strictObject({ colorHex: color, opacity: z.number().finite().min(0).max(1).optional() }).nullable().optional(),
+}).refine(object => object.shape.kind === 'empty' ? object.material == null : object.material != null, 'Empty objects have no material; visible objects require a material')
+  .refine(object => object.shape.kind === 'empty' ? (object.scaleMm ?? [1, 1, 1]).every(value => value === (object.scaleMm ?? [1, 1, 1])[0]) : (object.scaleMm ?? [1, 1, 1]).every(value => value === 1), 'Empty scale is uniform; primitive scale is encoded by its shape dimensions')
+  .refine(object => {
+    if (object.shape.kind !== 'mesh') return true;
+    const shape = object.shape;
+    for (const triangle of shape.triangles) {
+      if (new Set(triangle).size !== 3) return false;
+      for (const index of triangle) if (index >= shape.vertices.length) return false;
+      const [a, b, c] = triangle.map(index => shape.vertices[index]!);
+      const ux = b![0] - a![0]; const uy = b![1] - a![1]; const uz = b![2] - a![2];
+      const vx = c![0] - a![0]; const vy = c![1] - a![1]; const vz = c![2] - a![2];
+      const cx = uy * vz - uz * vy; const cy = uz * vx - ux * vz; const cz = ux * vy - uy * vx;
+      if (cx * cx + cy * cy + cz * cz < 1e-12) return false;
+    }
+    for (const index of shape.editableVertices ?? []) if (index >= shape.vertices.length) return false;
+    return true;
+  }, 'Mesh triangles must reference three distinct existing vertices');
 export const SceneDocumentSchema = z.strictObject({
   schemaVersion: z.literal(1), revision: z.number().int().nonnegative(),
   objects: z.array(SceneObjectSchema).max(500),
-}).refine(doc => new Set(doc.objects.map(o => o.id)).size === doc.objects.length, 'Duplicate object IDs');
+}).refine(doc => new Set(doc.objects.map(o => o.id)).size === doc.objects.length, 'Duplicate object IDs')
+  .refine(doc => doc.objects.every(object => !object.parentId || doc.objects.some(parent => parent.id === object.parentId && parent.shape.kind === 'empty')), 'Parent must be an existing empty object')
+  .refine(doc => doc.objects.every(object => {
+    const seen = new Set<string>([object.id]); let parentId = object.parentId;
+    while (parentId) { if (seen.has(parentId)) return false; seen.add(parentId); parentId = doc.objects.find(parent => parent.id === parentId)?.parentId; }
+    return true;
+  }), 'Hierarchy cannot contain cycles');
 
 export type Vec3 = z.infer<typeof Vec3Schema>;
 export type Quat = z.infer<typeof QuatSchema>;
@@ -39,6 +65,8 @@ export const SceneOperationSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('create_box'), ...createBase, sizeMm: box.shape.sizeMm }),
   z.strictObject({ type: z.literal('create_cylinder'), ...createBase, radiusMm: dimension, heightMm: dimension }),
   z.strictObject({ type: z.literal('create_sphere'), ...createBase, radiusMm: dimension }),
+  z.strictObject({ type: z.literal('create_empty'), ...createBase }),
+  z.strictObject({ type: z.literal('create_mesh'), ...createBase, vertices: mesh.shape.vertices, triangles: mesh.shape.triangles }),
   z.strictObject({ type: z.literal('duplicate_object'), ...target.shape, id: identifier, name }),
   z.strictObject({ type: z.literal('delete_object'), ...target.shape }),
   z.strictObject({ type: z.literal('translate_object'), ...target.shape, deltaMm: Vec3Schema }),
@@ -50,12 +78,18 @@ export const SceneOperationSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('resize_box_face'), ...target.shape, face: BoxFaceSchema, deltaMm: bounded }),
   z.strictObject({ type: z.literal('rename_object'), ...target.shape, name }),
   z.strictObject({ type: z.literal('set_material_color'), ...target.shape, colorHex: color }),
+  z.strictObject({ type: z.literal('set_material_opacity'), ...target.shape, opacity: z.number().finite().min(0).max(1) }),
+  z.strictObject({ type: z.literal('reparent_object'), ...target.shape, parentId: identifier.nullable() }),
+  z.strictObject({ type: z.literal('reorder_object'), ...target.shape, beforeId: identifier.nullable() }),
+  z.strictObject({ type: z.literal('set_object_scale'), ...target.shape, scaleMm: z.tuple([dimension, dimension, dimension]) }),
+  z.strictObject({ type: z.literal('set_mesh_vertex'), ...target.shape, index: z.number().int().nonnegative(), positionMm: Vec3Schema }),
+  z.strictObject({ type: z.literal('set_custom_mesh'), ...target.shape, vertices: mesh.shape.vertices, triangles: mesh.shape.triangles }),
 ]);
 export type SceneOperation = z.infer<typeof SceneOperationSchema>;
 export const SceneTransactionSchema = z.strictObject({
   expectedRevision: z.number().int().nonnegative(),
   source: z.enum(['mouse', 'keyboard', 'gesture', 'ai', 'numeric']),
-  operations: z.array(SceneOperationSchema).min(1).max(100),
+  operations: z.array(SceneOperationSchema).min(1).max(2500),
 });
 export type SceneTransaction = z.infer<typeof SceneTransactionSchema>;
 
@@ -109,9 +143,11 @@ export function applyTransaction(input: SceneDocument, transactionInput: SceneTr
   };
   for (const op of transaction.operations) {
     switch (op.type) {
-      case 'create_box': insert({ id: op.id, name: op.name, shape: { kind: 'box', sizeMm: op.sizeMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#76b7ff' } }); break;
-      case 'create_cylinder': insert({ id: op.id, name: op.name, shape: { kind: 'cylinder', radiusMm: op.radiusMm, heightMm: op.heightMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#b7a2ff' } }); break;
-      case 'create_sphere': insert({ id: op.id, name: op.name, shape: { kind: 'sphere', radiusMm: op.radiusMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#ffc785' } }); break;
+      case 'create_box': insert({ id: op.id, name: op.name, shape: { kind: 'box', sizeMm: op.sizeMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#76b7ff', opacity: 0.5 } }); break;
+      case 'create_cylinder': insert({ id: op.id, name: op.name, shape: { kind: 'cylinder', radiusMm: op.radiusMm, heightMm: op.heightMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#b7a2ff', opacity: 0.5 } }); break;
+      case 'create_sphere': insert({ id: op.id, name: op.name, shape: { kind: 'sphere', radiusMm: op.radiusMm }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#ffc785', opacity: 0.5 } }); break;
+      case 'create_empty': insert({ id: op.id, name: op.name, shape: { kind: 'empty' }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], scaleMm: [1, 1, 1] }); break;
+      case 'create_mesh': insert({ id: op.id, name: op.name, shape: { kind: 'mesh', vertices: op.vertices, triangles: op.triangles }, positionMm: op.positionMm, rotation: [0, 0, 0, 1], material: { colorHex: '#76b7ff', opacity: 0.5 } }); break;
       case 'duplicate_object': {
         const original = get(op.targetId);
         insert({ ...original, id: op.id, name: op.name, positionMm: [original.positionMm[0] + 16, original.positionMm[1], original.positionMm[2] + 16] });
@@ -126,7 +162,41 @@ export function applyTransaction(input: SceneDocument, transactionInput: SceneTr
       case 'set_sphere_radius': replace(op.targetId, o => { if (o.shape.kind !== 'sphere') throw new Error('Object is not a sphere'); return { ...o, shape: { kind: 'sphere', radiusMm: op.radiusMm } }; }); break;
       case 'resize_box_face': replace(op.targetId, o => stretchBoxFace(o, op.face, op.deltaMm)); break;
       case 'rename_object': replace(op.targetId, o => ({ ...o, name: op.name })); break;
-      case 'set_material_color': replace(op.targetId, o => ({ ...o, material: { colorHex: op.colorHex } })); break;
+      case 'set_material_color': replace(op.targetId, o => { if (!o.material) throw new Error('Empty objects have no material'); return { ...o, material: { ...o.material, colorHex: op.colorHex } }; }); break;
+      case 'set_material_opacity': replace(op.targetId, o => { if (!o.material) throw new Error('Empty objects have no material'); return { ...o, material: { ...o.material, opacity: op.opacity } }; }); break;
+      case 'reparent_object': {
+        const child = get(op.targetId);
+        if (op.parentId === op.targetId) throw new Error('An object cannot parent itself');
+        if (op.parentId) { const parent = get(op.parentId); if (parent.shape.kind !== 'empty') throw new Error('Only empty objects can be parents'); }
+        replace(child.id, o => ({ ...o, parentId: op.parentId ?? undefined }));
+        break;
+      }
+      case 'reorder_object': {
+        const object = get(op.targetId);
+        if (op.beforeId === object.id) break;
+        const before = op.beforeId ? get(op.beforeId) : undefined;
+        if (before && before.parentId !== object.parentId) throw new Error('Hierarchy items can only be reordered among siblings');
+        objects = objects.filter(item => item.id !== object.id);
+        if (before) objects.splice(objects.findIndex(item => item.id === before.id), 0, object);
+        else {
+          const lastSibling = objects.reduce((last, item, index) => item.parentId === object.parentId ? index + 1 : last, 0);
+          objects.splice(lastSibling, 0, object);
+        }
+        break;
+      }
+      case 'set_object_scale': replace(op.targetId, o => { if (o.shape.kind !== 'empty') throw new Error('Only empty objects have transform scale'); return { ...o, scaleMm: op.scaleMm }; }); break;
+      case 'set_mesh_vertex': replace(op.targetId, o => {
+        if (o.shape.kind !== 'mesh') throw new Error('Vertex editing requires a custom mesh');
+        if (op.index >= o.shape.vertices.length) throw new Error('Vertex index out of range');
+        if (!o.shape.editableVertices?.includes(op.index)) throw new Error('This mesh does not expose editable box corners');
+        const vertices = o.shape.vertices.slice(); vertices[op.index] = op.positionMm;
+        return { ...o, shape: { ...o.shape, vertices } };
+      }); break;
+      case 'set_custom_mesh': replace(op.targetId, o => {
+        if (o.shape.kind !== 'box' && o.shape.kind !== 'mesh') throw new Error('Only boxes can be converted to editable meshes');
+        const editableVertices = o.shape.kind === 'mesh' ? o.shape.editableVertices : Array.from({ length: op.vertices.length }, (_, index) => index);
+        return { ...o, shape: { kind: 'mesh', vertices: op.vertices, triangles: op.triangles, ...(editableVertices ? { editableVertices } : {}) } };
+      }); break;
     }
   }
   return SceneDocumentSchema.parse({ ...scene, revision: scene.revision + 1, objects });

@@ -709,3 +709,31 @@ Input recognition and geometry execution must remain separate.
 All committed geometry modifications must use the shared validated scene operation engine.
 
 The most important user experience is intuitive physical manipulation followed by precise, context-aware AI refinement.
+
+## 23. Approved shape, hierarchy, material, and boolean interactions
+
+### Shape handles and corners
+
+- Shape mode displays colored axis arrows with shafts and arrowheads at the current editable boundary. During a drag, the previewed handle follows the changed edge or radius.
+- Boxes expose six face arrows and eight visually distinct corner handles. A corner drag converts the box to an indexed custom mesh on first edit, then moves the shared logical corner vertex. Box faces continue to use the anchored face-stretch operation.
+- Spheres expose six radial radius arrows. Cylinders expose four radial radius arrows and two cap-height arrows; cap drags preserve the opposite cap plane.
+- Boolean-result meshes remain selectable and support object transforms. Corner handles are reserved for box-derived custom meshes.
+
+### Opacity and empty objects
+
+- New solid objects start at 50% opacity. The inspector provides a 0–100% slider; scrolling over the slider changes opacity in 5% steps.
+- Opacity is part of the saved scene material. Empty objects have no material or rendered/collision mesh and contain only position, rotation, and scale.
+
+### Hierarchy and grouping
+
+- Shift-click toggles multi-selection in the hierarchy and viewport.
+- Right-click opens a cursor-positioned menu with Group, Union, and Subtract.
+- Group creates an Empty parent at the selected objects' world-space center and reparents the selection without changing its world pose. Inspector position and rotation values then show local space.
+- Dragging onto an Empty makes the selection its children; dragging above or below a hierarchy row reorders siblings; dropping in the root area ungroups/reparents to scene root while preserving world pose.
+- Empty parent transforms inherit through the scene tree. Group scale is currently represented as a uniform Empty transform.
+
+### Boolean preview and overlap warnings
+
+- Union and Subtract require exactly two selected solids. The first selected object is the target; the second is the cutter. Empty objects and objects with children cannot be boolean inputs.
+- The preview leaves the inputs visible and overlays the computed result. Apply replaces both inputs with one validated indexed mesh in one scene transaction; cancel preserves both inputs.
+- A non-blocking hierarchy warning identifies objects whose closed-solid intersection has positive volume. Group membership does not suppress the warning. Empty objects are excluded. Touching surfaces without intersecting volume are not warned.

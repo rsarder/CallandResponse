@@ -44,7 +44,7 @@ describe('scene executor', () => {
     ]);
     expect(result.objects[0]?.shape).toEqual({ kind: 'box', sizeMm: [12, 13, 14] });
     expect(result.objects[0]?.name).toBe('Plate');
-    expect(result.objects[0]?.material.colorHex).toBe('#123456');
+    expect(result.objects[0]?.material?.colorHex).toBe('#123456');
   });
 
   it('duplicates a stable object and edits cylinder and sphere dimensions', () => {
