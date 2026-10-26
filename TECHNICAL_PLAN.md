@@ -1,6 +1,6 @@
-# Spatial Studio — Technical Plan
+# Call and Response — Technical Plan
 
-**Project:** Spatial Studio  
+**Project:** Call and Response  
 **Event:** Meta Global AI Developer Hackathon 2026  
 **Team:** Two developers  
 **Development time:** Approximately 8.5 days  
@@ -9,7 +9,7 @@
 
 ## 1. Project overview
 
-Spatial Studio is a standalone, browser-based 3D modeling application that supports conventional mouse and keyboard controls, webcam hand gestures, voice commands, and natural-language AI assistance.
+Call and Response is a standalone, browser-based 3D modeling application that supports conventional mouse and keyboard controls, webcam hand gestures, voice commands, and natural-language AI assistance.
 
 The application allows users to:
 
@@ -43,7 +43,7 @@ For example:
 
 ### 1.2 What this project is not
 
-Spatial Studio is not intended to be:
+Call and Response is not intended to be:
 
 - A replacement for Blender, Fusion 360, or professional CAD software.
 - A complete parametric constraint solver.
