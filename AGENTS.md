@@ -362,3 +362,201 @@ Next recommended task:
 - Optional CSG: https://github.com/gkjohnson/three-bvh-csg
 
 **North star:** a functional 3D editor that stays useful without AI, plus a striking, reliable interaction where a person physically reshapes geometry with a webcam gesture and Muse Spark precisely understands and edits **that same geometry** through natural language.
+
+## 16. Task Tracking and Autonomous Progress Updates
+
+`TASKS.md` is the project's authoritative development tracker. Coding agents are responsible for creating and maintaining it as development progresses.
+
+### 16.1 TASKS.md Creation
+
+If `TASKS.md` does not exist, the coding agent must create it before beginning substantial implementation work.
+
+Initialize it using:
+
+- `AGENTS.md`
+- `TECHNICAL_PLAN.md`
+- `INTERACTION_SPEC.md`
+- The current repository state
+- Existing completed functionality
+- The active development milestone
+
+Do not assume planned functionality is already implemented.
+
+Inspect the repository before marking tasks as completed.
+
+### 16.2 Required TASKS.md Structure
+
+The document must contain:
+
+1. **Current milestone:** The active development phase and its acceptance criteria.
+2. **In progress:** Tasks currently being implemented, including owner or responsible agent.
+3. **Pending tasks:** Upcoming tasks organized by priority and dependency.
+4. **Completed tasks:** Verified completed work.
+5. **Blocked tasks:** Work that cannot proceed, including the cause and required resolution.
+6. **Integration checkpoints:** Tests or workflows that must function before proceeding.
+7. **Known issues:** Reproducible bugs and important technical limitations.
+8. **Next recommended tasks:** The highest-priority actionable work.
+9. **Deadline and feature freeze:** The project submission deadline and current scope restrictions.
+
+Use Markdown checkboxes for task status.
+
+Each nontrivial task should have a unique identifier, a short description, priority, owner, dependencies when relevant, and acceptance criteria.
+
+### 16.3 Automatic Task Updates
+
+Coding agents are authorized and expected to update `TASKS.md` during normal development.
+
+Agents must update the tracker when:
+
+- A task is started.
+- A task is completed and verified.
+- A blocker is discovered.
+- A blocker is resolved.
+- An integration checkpoint passes or fails.
+- A task requires additional work.
+- An approved architectural decision changes the implementation plan.
+- New necessary implementation tasks are discovered.
+
+Agents do not need separate permission for routine task-status updates.
+
+Task tracking should happen as part of implementation, not as a separate optional activity.
+
+### 16.4 Completion Requirements
+
+Do not mark a task complete merely because code has been written.
+
+A task can be marked complete only when:
+
+1. Its acceptance criteria are satisfied.
+2. The relevant implementation exists.
+3. Applicable tests have passed.
+4. The implementation integrates with existing systems.
+5. No known blocking defect prevents the intended behavior.
+
+If tests cannot be run, record the limitation and leave the task pending verification.
+
+Distinguish between:
+
+- Implemented.
+- Tested.
+- Fully completed.
+
+Do not claim unverified functionality is complete.
+
+### 16.5 Task Dependencies and Priorities
+
+Agents must respect task dependencies.
+
+Do not implement dependent features before their required foundations exist.
+
+Prioritize work in this order:
+
+1. Correctness and architectural integrity.
+2. Core P0 functionality.
+3. Blocking integration problems.
+4. Reliability and acceptance tests.
+5. P1 features.
+6. P2 stretch goals.
+
+Do not begin stretch goals while critical P0 requirements are incomplete.
+
+If the project falls behind schedule, identify appropriate scope reductions rather than silently abandoning required features.
+
+### 16.6 Agent Autonomy and Restrictions
+
+Agents may autonomously:
+
+- Create `TASKS.md`.
+- Add implementation subtasks required by approved features.
+- Update task status.
+- Record blockers.
+- Document test results.
+- Recommend the next task.
+- Reorganize the task list for clarity.
+- Implement assigned tasks within approved architectural boundaries.
+
+Agents must not autonomously:
+
+- Remove established project requirements.
+- Reclassify P0 requirements as optional.
+- Add major features outside the approved scope.
+- Replace the technical architecture.
+- Mark incomplete tasks as complete.
+- Delete unresolved blockers or known issues.
+- Overwrite another developer's active work.
+- Change critical acceptance criteria without approval.
+
+Major scope or architecture changes require explicit developer approval.
+
+### 16.7 Multi-Agent and Two-Developer Coordination
+
+When multiple coding agents or developers are working concurrently:
+
+- Each active task must have an identified owner.
+- Avoid assigning overlapping modifications to the same files without coordination.
+- Preserve another agent's task updates.
+- Do not overwrite `TASKS.md` with an outdated local version.
+- Coordinate changes to shared interfaces and operation schemas.
+- Record integration dependencies and merge blockers.
+- Prefer small, independently testable tasks.
+
+If conflicting changes are discovered, preserve existing work and report the conflict.
+
+### 16.8 Required Agent Workflow
+
+Before starting a task:
+
+1. Read `AGENTS.md`.
+2. Read `TASKS.md`, creating it if missing.
+3. Read relevant technical specifications.
+4. Inspect existing code and recent changes.
+5. Identify the highest-priority assigned or unblocked task.
+6. Confirm its acceptance criteria and dependencies.
+7. Mark the task in progress.
+
+During implementation:
+
+1. Follow the approved architecture.
+2. Implement the smallest complete functionality.
+3. Add relevant tests.
+4. Record important blockers or newly discovered dependencies.
+5. Avoid unrelated features or refactoring.
+
+After implementation:
+
+1. Run relevant available tests.
+2. Verify acceptance criteria.
+3. Update task status accurately.
+4. Record remaining issues.
+5. Update technical documentation if required.
+6. Identify the next highest-priority task.
+7. Provide a concise implementation report.
+
+### 16.9 Documentation Maintenance
+
+`AGENTS.md` contains stable project instructions and must not be rewritten for routine progress updates.
+
+`TASKS.md` tracks implementation status and should be updated frequently.
+
+`TECHNICAL_PLAN.md` describes the agreed technical design.
+
+`INTERACTION_SPEC.md` describes approved user interaction behavior.
+
+`docs/DECISIONS.md` records significant approved architectural changes.
+
+Coding agents must keep these documents consistent without treating the task tracker as authorization to change the project scope.
+
+### 16.10 End-of-Task Reporting
+
+Every completed coding task must include:
+
+- Task identifier and description.
+- Implementation summary.
+- Files created or modified.
+- Tests performed and results.
+- Acceptance criteria verified.
+- Remaining issues or blockers.
+- Changes made to `TASKS.md`.
+- Next recommended task.
+
+**Important:** Maintaining `TASKS.md` is part of completing a coding task. A task should not be considered fully finished until its status and relevant notes have been updated.
