@@ -5,7 +5,7 @@ import { useEditor } from './editor';
 
 beforeEach(() => useEditor.setState({
   scene: emptyScene(), past: [], future: [], selectedId: null, selectedIds: [], selectedFace: null,
-  mode: 'object', tool: 'select', axisLock: null, preview: null, booleanPreview: null, error: null,
+  mode: 'object', tool: 'select', axisLock: null, preview: null, booleanPreview: null, transformHandleHovered: false, transformDragging: false, error: null,
 }));
 
 describe('editor history and preview', () => {
@@ -83,5 +83,20 @@ describe('editor history and preview', () => {
     expect(loaded.scale).toEqual([2, 3, 4]);
     expect(loaded.shape).toEqual({ kind: 'sphere', radiiMm: [12, 12, 12] });
     expect(useEditor.getState().scene.schemaVersion).toBe(2);
+  });
+
+  it('clears transform-handle ownership when tools, modes, or cancel state change', () => {
+    useEditor.getState().setTransformHandleHovered(true);
+    useEditor.getState().setTransformDragging(true);
+    useEditor.getState().setTool('rotate');
+    expect(useEditor.getState()).toMatchObject({ transformHandleHovered: false, transformDragging: false });
+    useEditor.getState().setTransformHandleHovered(true);
+    useEditor.getState().setTransformDragging(true);
+    useEditor.getState().setMode('shape');
+    expect(useEditor.getState()).toMatchObject({ transformHandleHovered: false, transformDragging: false });
+    useEditor.getState().setTransformHandleHovered(true);
+    useEditor.getState().setTransformDragging(true);
+    useEditor.getState().cancel();
+    expect(useEditor.getState()).toMatchObject({ transformHandleHovered: false, transformDragging: false });
   });
 });

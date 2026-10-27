@@ -281,7 +281,12 @@ export function applyTransaction(input: SceneDocument, transactionInput: SceneTr
         return { ...object, shape: { ...object.shape, vertices } };
       }); break;
       case 'set_custom_mesh': replace(op.targetId, object => {
-        if (object.shape.kind !== 'box' && object.shape.kind !== 'mesh') throw new Error('Only boxes or editable meshes can be replaced with custom topology');
+        if (object.shape.kind !== 'box' && (object.shape.kind !== 'mesh' || !object.shape.editableVertices?.length))
+          throw new Error('Only boxes or editable box-derived meshes can be replaced with custom topology');
+        if (object.shape.kind === 'box' && (op.vertices.length !== 8 || op.triangles.length !== 12))
+          throw new Error('A box must convert to an eight-vertex, twelve-triangle mesh');
+        const topology = inspectMeshTopology(op.triangles);
+        if (!topology.closed) throw new Error('Editable box topology must remain closed and consistently wound');
         const editableVertices = object.shape.kind === 'mesh' ? object.shape.editableVertices : Array.from({ length: op.vertices.length }, (_, index) => index);
         return { ...object, shape: { kind: 'mesh', vertices: op.vertices, triangles: op.triangles, ...(editableVertices ? { editableVertices } : {}) } };
       }); break;

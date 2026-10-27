@@ -30,6 +30,8 @@ interface EditorState {
   axisLock: AxisLock;
   preview: SceneObject | null;
   booleanPreview: BooleanPreviewState | null;
+  transformHandleHovered: boolean;
+  transformDragging: boolean;
   error: string | null;
   cameraAction: CameraAction;
   cameraSeq: number;
@@ -46,6 +48,8 @@ interface EditorState {
   previewOperations: (operations: SceneOperation[]) => void;
   clearPreview: () => void;
   setBooleanPreview: (preview: BooleanPreviewState | null) => void;
+  setTransformHandleHovered: (hovered: boolean) => void;
+  setTransformDragging: (dragging: boolean) => void;
   transact: (operations: SceneOperation[], source: SceneTransaction['source']) => boolean;
   undo: () => void;
   redo: () => void;
@@ -60,6 +64,7 @@ function describeError(error: unknown): string {
 export const useEditor = create<EditorState>((set, get) => ({
   scene: emptyScene(), past: [], future: [], selectedId: null, selectedIds: [], selectedFace: null,
   mode: 'object', tool: 'select', axisLock: null, preview: null, booleanPreview: null, error: null,
+  transformHandleHovered: false, transformDragging: false,
   cameraAction: 'reset', cameraSeq: 0, cancelSeq: 0,
   select: (selectedId, additive = false) => set(state => {
     if (!selectedId) return { selectedId: null, selectedIds: [], selectedFace: null, preview: null, booleanPreview: null };
@@ -69,11 +74,11 @@ export const useEditor = create<EditorState>((set, get) => ({
     return { selectedId: selectedIds.at(-1) ?? null, selectedIds, selectedFace: null, preview: null, booleanPreview: null };
   }),
   setFace: selectedFace => set({ selectedFace }),
-  setMode: mode => set(state => ({ mode, selectedFace: null, preview: null, booleanPreview: null, cancelSeq: state.cancelSeq + 1 })),
-  setTool: tool => set(state => ({ tool, preview: null, booleanPreview: null, cancelSeq: state.cancelSeq + 1 })),
+  setMode: mode => set(state => ({ mode, selectedFace: null, preview: null, booleanPreview: null, transformHandleHovered: false, transformDragging: false, cancelSeq: state.cancelSeq + 1 })),
+  setTool: tool => set(state => ({ tool, preview: null, booleanPreview: null, transformHandleHovered: false, transformDragging: false, cancelSeq: state.cancelSeq + 1 })),
   setAxisLock: axisLock => set({ axisLock }),
   camera: cameraAction => set(state => ({ cameraAction, cameraSeq: state.cameraSeq + 1 })),
-  cancel: () => set(state => ({ preview: null, booleanPreview: null, selectedFace: null, cancelSeq: state.cancelSeq + 1 })),
+  cancel: () => set(state => ({ preview: null, booleanPreview: null, selectedFace: null, transformHandleHovered: false, transformDragging: false, cancelSeq: state.cancelSeq + 1 })),
   setError: error => set({ error }),
   previewOperation: operation => {
     get().previewOperations([operation]);
@@ -90,6 +95,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
   clearPreview: () => set({ preview: null }),
   setBooleanPreview: booleanPreview => set({ booleanPreview }),
+  setTransformHandleHovered: transformHandleHovered => set(state => state.transformHandleHovered === transformHandleHovered ? state : { transformHandleHovered }),
+  setTransformDragging: transformDragging => set(state => state.transformDragging === transformDragging ? state : { transformDragging }),
   transact: (operations, source) => {
     try {
       const { scene, past } = get();

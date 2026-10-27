@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, type ThreeEvent, useThree } from '@react-three/fiber';
+import { Canvas, events as createPointerEvents, type ThreeEvent, useThree } from '@react-three/fiber';
 import { Edges, OrbitControls, OrthographicCamera, PerspectiveCamera, TransformControls } from '@react-three/drei';
-import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import type { OrbitControls as OrbitControlsImpl, TransformControls as TransformControlsImpl } from 'three-stdlib';
 import {
-  DoubleSide, Group, Matrix4,
+  DoubleSide, Group, Matrix4, Object3D,
   OrthographicCamera as ThreeOrthographicCamera, PerspectiveCamera as ThreePerspectiveCamera,
   Plane, Quaternion, Vector3,
 } from 'three';
@@ -16,6 +16,26 @@ import { localTransformForWorld, parentWorldMatrixFor, worldMatrixFor } from '..
 import { useEditor } from '../state/editor';
 
 const faces: BoxFace[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
+const HANDLE_INTERACTION_PRIORITY = 100;
+
+function interactionPriority(object: Object3D): number {
+  let current: Object3D | null = object;
+  while (current) {
+    const priority = current.userData.interactionPriority;
+    if (typeof priority === 'number') return priority;
+    current = current.parent;
+  }
+  return 0;
+}
+
+const handleFirstEvents = (state: Parameters<typeof createPointerEvents>[0]) => {
+  const manager = createPointerEvents(state);
+  return {
+    ...manager,
+    filter: (intersections: Parameters<NonNullable<typeof manager.filter>>[0]) => [...intersections].sort((first, second) =>
+      interactionPriority(second.object) - interactionPriority(first.object) || first.distance - second.distance),
+  };
+};
 
 function CameraRig() {
   const perspective = useRef<ThreePerspectiveCamera>(null);
@@ -68,11 +88,16 @@ function ShapeMesh({ object, selected }: { object: SceneObject; selected: boolea
   const material = object.material ?? { colorHex: '#ffffff', opacity: 0.5 };
   return <mesh castShadow receiveShadow scale={shape.kind === 'sphere' ? shape.radiiMm : [1, 1, 1]}
     onPointerDown={event => {
-      event.stopPropagation();
-      if (useEditor.getState().mode === 'view') return;
       const state = useEditor.getState();
+      if (state.mode === 'object' && state.tool !== 'select' && state.transformHandleHovered) return;
+      event.stopPropagation();
+      if (state.mode === 'view') return;
       if (event.button === 2 && state.selectedIds.includes(object.id)) return;
-      state.select(object.id, event.nativeEvent.shiftKey);
+      const objectId = object.id; const additive = event.nativeEvent.shiftKey;
+      queueMicrotask(() => {
+        const latest = useEditor.getState();
+        if (!latest.transformDragging) latest.select(objectId, additive);
+      });
     }}>
     {shape.kind === 'box' ? <boxGeometry args={shape.sizeMm} />
       : shape.kind === 'cylinder' ? <cylinderGeometry args={[shape.radiusMm, shape.radiusMm, shape.heightMm, 48]} />
@@ -167,7 +192,7 @@ function FaceHandles({ object }: { object: SceneObject }) {
     const direction = new Vector3(axis === 0 ? sign : 0, axis === 1 ? sign : 0, axis === 2 ? sign : 0);
     const rotation = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), direction);
     const axisColor = axis === 0 ? '#ff7068' : axis === 1 ? '#75e39a' : '#6ba8ff'; const color = selectedFace === face ? '#ffdd8a' : axisColor;
-    return <group key={face} position={position} quaternion={rotation} onPointerDown={event => onDown(event, face)} onPointerMove={onMove} onPointerUp={onUp}>
+    return <group key={face} position={position} quaternion={rotation} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY }} onPointerDown={event => onDown(event, face)} onPointerMove={onMove} onPointerUp={onUp}>
       <mesh position={[0, length / 2, 0]}><cylinderGeometry args={[radius, radius, length, 8]} /><meshBasicMaterial color={color} depthTest={false} /></mesh>
       <mesh position={[0, length + radius * 1.5, 0]}><coneGeometry args={[radius * 2.25, radius * 4, 10]} /><meshBasicMaterial color={color} depthTest={false} /></mesh>
       <mesh position={[0, length * 0.65, 0]}><sphereGeometry args={[Math.max(2.4, radius * 2.4), 10, 8]} /><meshBasicMaterial transparent opacity={0} depthWrite={false} /></mesh>
@@ -217,7 +242,7 @@ function VertexHandles({ object }: { object: SceneObject }) {
   };
   if (!editableIndices.length) return null;
   const handleSize = Math.max(1.8, Math.min(4, Math.max(...dimensionsFor(object)) * 0.04));
-  return <group ref={handleRoot}>{editableIndices.map(index => <mesh key={index} position={shownVertices[index]!} onPointerDown={event => onDown(event, index)} onPointerMove={onMove} onPointerUp={onUp}>
+  return <group ref={handleRoot}>{editableIndices.map(index => <mesh key={index} position={shownVertices[index]!} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY }} onPointerDown={event => onDown(event, index)} onPointerMove={onMove} onPointerUp={onUp}>
     <octahedronGeometry args={[handleSize, 0]} /><meshStandardMaterial color="#ffc86a" emissive="#b56c16" emissiveIntensity={0.25} depthTest={false} />
   </mesh>)}</group>;
 }
@@ -231,13 +256,20 @@ function EditableObject({ object, scene }: { object: SceneObject; scene: SceneDo
   const selectedId = useEditor(state => state.selectedId); const selectedIds = useEditor(state => state.selectedIds);
   const mode = useEditor(state => state.mode); const tool = useEditor(state => state.tool); const axisLock = useEditor(state => state.axisLock);
   const preview = useEditor(state => state.preview); const cancelSeq = useEditor(state => state.cancelSeq);
-  const group = useRef<Group>(null); const [target, setTarget] = useState<Group | null>(null); const dragging = useRef(false);
+  const group = useRef<Group>(null); const transformControls = useRef<TransformControlsImpl>(null); const [target, setTarget] = useState<Group | null>(null); const dragging = useRef(false);
   const selected = selectedIds.includes(object.id) || selectedId === object.id;
   const shown = preview?.id === object.id ? preview : object;
   const shownScene = shown === object ? scene : { ...scene, objects: scene.objects.map(item => item.id === object.id ? shown : item) };
   const canonicalWorld = worldMatrixFor(shownScene, shown);
   const parts = matrixParts(canonicalWorld);
   useEffect(() => { setTarget(group.current); }, []);
+  useEffect(() => {
+    if (!selected) return;
+    return () => {
+      const state = useEditor.getState();
+      state.setTransformHandleHovered(false); state.setTransformDragging(false);
+    };
+  }, [selected]);
   useEffect(() => {
     dragging.current = false; const current = group.current; if (!current) return;
     const reset = matrixParts(worldMatrixFor(scene, object));
@@ -249,7 +281,12 @@ function EditableObject({ object, scene }: { object: SceneObject; scene: SceneDo
     const uniform = values.reduce((best, value) => Math.abs(value - 1) > Math.abs(best - 1) ? value : best, 1);
     group.current.scale.set(uniform, uniform, uniform);
   };
+  const syncTransformHover = () => {
+    const axis = (transformControls.current as unknown as { axis?: string | null } | null)?.axis;
+    useEditor.getState().setTransformHandleHovered(Boolean(axis));
+  };
   const finish = () => {
+    useEditor.getState().setTransformDragging(false);
     const current = group.current; if (!current || !dragging.current || mode !== 'object' || tool === 'select') return;
     dragging.current = false; current.updateMatrixWorld(true);
     try {
@@ -276,10 +313,10 @@ function EditableObject({ object, scene }: { object: SceneObject; scene: SceneDo
       {(object.shape.kind === 'box' || (object.shape.kind === 'mesh' && object.shape.editableVertices?.length)) && <VertexHandles object={object} />}
     </>}
   </group>;
-  return <>{content}{selected && mode === 'object' && tool !== 'select' && target && <TransformControls
+  return <>{content}{selected && mode === 'object' && tool !== 'select' && target && <TransformControls ref={transformControls}
     object={target} mode={tool === 'move' ? 'translate' : tool} size={0.8}
     showX={!axisLock || axisLock === 'x'} showY={!axisLock || axisLock === 'y'} showZ={!axisLock || axisLock === 'z'}
-    onMouseDown={() => { dragging.current = true; }} onObjectChange={constrainGroupScale} onMouseUp={finish}
+    onChange={syncTransformHover} onMouseDown={() => { dragging.current = true; useEditor.getState().setTransformDragging(true); }} onObjectChange={constrainGroupScale} onMouseUp={() => { finish(); syncTransformHover(); }}
   />}</>;
 }
 
@@ -314,7 +351,7 @@ export function Viewport({ onContextMenu }: { onContextMenu: (x: number, y: numb
     ? 'Boolean meshes support Object tools; direct Shape editing is not available.'
     : 'Drag axis arrows to edit primitive geometry · Drag gold corners on box-derived meshes';
   return <div className="viewport" aria-label="3D modeling viewport" onContextMenu={event => { event.preventDefault(); onContextMenu(event.clientX, event.clientY); }}>
-    <Canvas shadows dpr={[1, 2]} onPointerMissed={() => { if (mode !== 'view') useEditor.getState().select(null); }}><WorkspaceScene /></Canvas>
+    <Canvas events={handleFirstEvents} shadows dpr={[1, 2]} onPointerMissed={() => { if (mode !== 'view') useEditor.getState().select(null); }}><WorkspaceScene /></Canvas>
     <div className="viewport-tip">{mode === 'shape' ? shapeMessage : 'Drag to orbit · Right drag to pan · Scroll to zoom'}</div>
     <div className="axis-legend"><span className="axis-x">X</span><span className="axis-y">Y</span><span className="axis-z">Z</span></div>
   </div>;

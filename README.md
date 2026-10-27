@@ -7,6 +7,7 @@ Call and Response is an offline-first, browser-based 3D modeling editor. The cur
 - Create boxes, cylinders, spheres/ellipsoids, and transform-only Empty groups.
 - Select objects in the viewport or scene hierarchy; Shift-click builds a multi-selection.
 - Move, rotate, and scale objects with viewport gizmos or numeric inspector fields.
+- Use visible transform and Shape handles even when another object overlaps them on screen; active handle hit targets take priority over scene selection.
 - Orbit, pan, zoom, focus the selection, reset the camera, or use front/top/right views.
 - Switch explicitly between Object, Shape, and View modes.
 - Stretch any box face while preserving the opposite face plane, including on rotated boxes.
@@ -62,6 +63,8 @@ See [docs/DECISIONS.md](docs/DECISIONS.md) for the detailed invariants and hiera
 
 ## Validation commands
 
+Run these from the repository root after `npm ci`. Unit tests, typechecking, linting, and builds do not require Chrome or a running development server.
+
 ```sh
 npm run typecheck
 npm run lint
@@ -75,7 +78,15 @@ For the browser regression journey, start `npm run dev` in one terminal and run 
 npm run test:browser
 ```
 
-The browser test currently launches the standard Windows Chrome installation at a 1440 x 900 viewport with software WebGL. It drives user-visible controls and covers shape dragging/history, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
+The browser test launches the installed stable Google Chrome channel on Windows or macOS at a 1440 x 900 viewport. It drives user-visible controls and covers face and repeated corner editing, undo/redo, ellipsoids, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
+
+The test reports a direct setup error when the editor is not running or Chrome cannot be found. Nonstandard installations can be selected with `CHROME_PATH`; a different running editor URL can be selected with `EDITOR_URL`. For example on macOS:
+
+```sh
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm run test:browser
+```
+
+`npm run test:browser` is the only check that requires Chrome and a separately running `npm run dev`. Use Node.js 22 or newer on every development machine.
 
 ## Current limitations
 

@@ -273,6 +273,8 @@ Other selectable objects
 Background
 ```
 
+When an active transform or Shape handle overlaps another rendered object in screen space, the handle owns the left-pointer interaction. The occluding object must not replace the selection or prevent the handle drag. Priority applies only inside the handle's actual picker region; ordinary clicks elsewhere continue to select scene objects normally.
+
 ## 7. Webcam pointer mapping
 
 MediaPipe fingertip coordinates are normalized to the webcam image.

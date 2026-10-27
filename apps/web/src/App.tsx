@@ -132,7 +132,7 @@ function Inspector({ object }: { object: SceneObject | undefined }) {
       const radiiMm: Vec3 = [...object.shape.radiiMm]; radiiMm[index] = value;
       edit({ type: 'set_ellipsoid_radii', targetId: object.id, radiiMm });
     }} />)}</div>}</>}
-    {object.shape.kind === 'mesh' && (() => { const bounds = meshBounds(object.shape.vertices); return <><div className="section-label section-gap">Mesh bounds <small>mm · read only</small></div><div className="field-grid">{bounds.size.map((value, index) => <NumberField key={index} label={['Width', 'Height', 'Depth'][index]!} value={value} readOnly onCommit={() => undefined} />)}</div><small>Arbitrary Boolean meshes use Object tools. Shape handles are disabled unless the mesh came from editable box corners.</small></>; })()}
+    {object.shape.kind === 'mesh' && (() => { const bounds = meshBounds(object.shape.vertices); const editable = Boolean(object.shape.editableVertices?.length); return <><div className="section-label section-gap">Mesh bounds <small>mm · read only</small></div><div className="field-grid">{bounds.size.map((value, index) => <NumberField key={index} label={['Width', 'Height', 'Depth'][index]!} value={value} readOnly onCommit={() => undefined} />)}</div><small>{editable ? 'Box-derived editable mesh. Use the gold corner handles in Shape mode; bounds update automatically.' : 'Applied Boolean mesh. Use Object tools or another Boolean operation; direct Shape editing is unavailable.'}</small></>; })()}
     {object.material && <><div className="section-label section-gap">Material</div>
     <ColorField object={object} />
     <OpacityField key={object.id} object={object} /></>}

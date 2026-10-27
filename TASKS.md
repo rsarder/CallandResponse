@@ -1,6 +1,13 @@
 # Call and Response — development tracker
 
-Updated: October 26, 2026. Feature development remains frozen. The STAB-1 stabilization implementation and quality gate are complete and awaiting product review; gesture, voice, Muse Spark, and unrelated stretch work were not changed.
+Updated: October 27, 2026. Multimodal development remains frozen while the final conventional-editor verification pass is active. STAB-1 is complete; this pass is limited to repeated box-corner editing, portable editor tests, and directly related correctness or documentation issues.
+
+## EDITOR-1 — final conventional-editor verification (implementation complete; Mac check pending)
+
+- [x] **GIZMO-01** P0, owner Codex, deps CORE-04/STAB-XFORM-01 — Active transform and Shape handles receive deterministic priority over overlapping scene geometry. Verified in Chrome with a sphere occluding a selected box's move gizmo: the box moved, the sphere remained unchanged, and selection stayed on the box. Picker ownership resets on tool/mode/cancel transitions.
+- [x] **MESH-01** P2, owner Codex, deps SHAPE-01 — Repeated box-corner editing verified. The first drag converts a box into a closed indexed mesh; subsequent and post-reload drags retain all eight handles; invalid/open topology is rejected; undo/redo and JSON round trip pass in Chrome.
+- [ ] **TEST-PORT-01** P0, owner Codex, deps STAB-E2E-01 — Portable harness implemented: Playwright discovers the installed Chrome channel on Windows/macOS, supports `CHROME_PATH`, `CHROME_CHANNEL`, and `EDITOR_URL`, and reports setup failures directly. Windows/default-channel and URL-override workflows pass; leave pending until the teammate executes it on macOS.
+- [x] **EDITOR-DOC-01** P1, owner Codex, deps MESH-01/TEST-PORT-01 — Reconciled `editableVertices` naming, Shape-mode capability messaging, and cross-platform test instructions across the specifications and README.
 
 ## STAB-1 — geometry, hierarchy, transform, and interaction stabilization
 
@@ -21,7 +28,7 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 
 - [x] **CHECK-01** `npm run typecheck` — web and shared strict TypeScript pass.
 - [x] **CHECK-02** `npm run lint` — ESLint passes.
-- [x] **CHECK-03** `npm test` / focused equivalent — 50 tests pass across four files.
+- [x] **CHECK-03** `npm test` — 52 tests pass across four files.
 - [x] **CHECK-04** `npm run build` — production build passes; existing bundle-size warning remains non-fatal.
 - [x] **CHECK-05** `npm run test:browser` — updated Chrome workflow passes; screenshots confirm centered move/rotate/scale controls and aligned shape handles.
 - [x] **CHECK-06** `git diff --check` — no whitespace errors (line-ending notices only).
@@ -44,7 +51,6 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 - [x] **CORE-04** P0, owner Codex, deps CORE-03 — Select/move/rotate/scale controls, axis locks, numeric inspector, Shape mode, and anchored face stretch.
 - [x] **CORE-05** P0, owner Codex, deps CORE-04 — Native validated JSON save/load, shortcuts, errors, and offline operation.
 - [x] **SHAPE-01** P0, owner Codex, deps CORE-04 — Axis handles for boxes, cylinders, and ellipsoids; preview during drag and one commit on release.
-- [ ] **MESH-01** P2, owner Codex, deps SHAPE-01 — Box-derived corner editing is implemented, but a dedicated browser regression for corner dragging is still needed before marking the feature independently verified. Accept: shared logical vertex moves, topology remains valid, save/load and undo/redo pass.
 - [x] **MAT-01** P1, owner Codex, deps CORE-02 — Validated opacity/color editing and JSON persistence.
 - [x] **CTX-01** P1, owner Codex, deps CORE-03 — Selection-aware cursor context menu with Group/Ungroup and all three Boolean actions.
 - [x] **EMPTY-01** P1, owner Codex, deps CORE-02 — Transform-only Empty objects without render geometry or material.
@@ -87,6 +93,6 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 
 ## Blockers and next priority
 
-No M1 stabilization blocker remains. The highest-priority recommended follow-up is **MESH-01**, adding a dedicated browser regression for box-corner deformation so the already implemented feature can be independently verified. After product review, resume **GEST-01** and **MUSE-01** without changing the geometry invariants established by STAB-1.
+No conventional-editor implementation blocker remains. The only open editor checkpoint is running `npm ci`, the standard checks, and `npm run test:browser` on the teammate's Mac to close **TEST-PORT-01** with real-device evidence. Do not add generic post-Boolean Shape editing: applied Boolean meshes intentionally remain Object-mode meshes and reusable Boolean inputs. After the Mac check and product review, the repository is ready for the separately scoped gesture and Muse milestones without changing the geometry invariants established by STAB-1.
 
 Hackathon submission target: November 4, 2026, 9:00 PM ET. Webcam, voice, and Muse Spark development remains frozen until this stabilization result is accepted.

@@ -5,21 +5,37 @@ import { resolve } from 'node:path';
 const resultsDir = resolve('test-results', 'browser');
 await mkdir(resultsDir, { recursive: true });
 const artifact = name => resolve(resultsDir, name);
+const editorUrl = (process.env.EDITOR_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '');
+const editorOrigin = new URL(editorUrl).origin;
 
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
-});
+try {
+  const response = await fetch(editorUrl, { signal: AbortSignal.timeout(5_000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+} catch (error) {
+  throw new Error(`The editor is not reachable at ${editorUrl}. Start it with "npm run dev" in another terminal, or set EDITOR_URL. ${error instanceof Error ? error.message : ''}`);
+}
+
+const chromePath = process.env.CHROME_PATH?.trim();
+const chromeChannel = process.env.CHROME_CHANNEL?.trim() || 'chrome';
+let browser;
+try {
+  browser = await chromium.launch({
+    headless: true,
+    ...(chromePath ? { executablePath: chromePath } : { channel: chromeChannel }),
+    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
+  });
+} catch (error) {
+  throw new Error(`Could not launch Chrome. Install Google Chrome, set CHROME_PATH to its executable, or set CHROME_CHANNEL to a Playwright-supported channel. ${error instanceof Error ? error.message : ''}`);
+}
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
 const errors = [];
 const externalRequests = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
-page.on('request', request => { if (/^https?:/.test(request.url()) && !/^http:\/\/localhost:5173\//.test(request.url())) externalRequests.push(request.url()); });
+page.on('request', request => { if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== editorOrigin) externalRequests.push(request.url()); });
 
 async function openEmpty() {
-  await page.goto(`http://localhost:5173/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
+  await page.goto(`${editorUrl}/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: /create a box/i }).waitFor();
   if (!await page.getByText(/Your scene is empty/i).isVisible()) throw new Error('Fresh browser scenario did not start with an empty scene');
 }
@@ -41,6 +57,24 @@ async function selectRows(names) {
 async function contextAction(rowName, action) {
   await page.getByRole('button', { name: rowName }).click({ button: 'right' });
   await page.getByRole('button', { name: new RegExp(`^${action}$`, 'i') }).click();
+}
+
+function assertClosedMesh(shape, label) {
+  if (shape.kind !== 'mesh') throw new Error(`${label} is not an indexed mesh`);
+  const edges = new Map();
+  for (const triangle of shape.triangles) {
+    if (new Set(triangle).size !== 3 || triangle.some(index => index < 0 || index >= shape.vertices.length))
+      throw new Error(`${label} contains invalid triangle indices`);
+    const [a, b, c] = triangle.map(index => shape.vertices[index]);
+    const ab = b.map((value, axis) => value - a[axis]); const ac = c.map((value, axis) => value - a[axis]);
+    const cross = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
+    if (cross.every(value => Math.abs(value) < 1e-10)) throw new Error(`${label} contains a degenerate triangle`);
+    for (const [from, to] of [[triangle[0], triangle[1]], [triangle[1], triangle[2]], [triangle[2], triangle[0]]]) {
+      const key = `${Math.min(from, to)}:${Math.max(from, to)}`;
+      edges.set(key, (edges.get(key) ?? 0) + 1);
+    }
+  }
+  if ([...edges.values()].some(count => count !== 2)) throw new Error(`${label} is not watertight`);
 }
 
 try {
@@ -78,6 +112,83 @@ try {
   await page.getByLabel(/^X$/).fill('12'); await page.getByLabel(/^X$/).press('Tab');
   await page.getByLabel('Y rotation').fill('25'); await page.getByLabel('Y rotation').press('Tab');
   await page.getByLabel('X scale').fill('1.25'); await page.getByLabel('X scale').press('Tab');
+
+  // Active transform gizmos must win hit testing over an occluding object.
+  await openEmpty();
+  await page.getByRole('button', { name: /create a box/i }).click();
+  await page.getByRole('button', { name: /Sphere \+/i }).click();
+  await page.getByLabel(/^X$/).fill('0'); await page.getByLabel(/^X$/).press('Tab');
+  await page.getByLabel(/^Z$/).fill('50'); await page.getByLabel(/^Z$/).press('Tab');
+  const overlappedBoxRow = page.getByRole('button', { name: /Box 1.*box/i });
+  await overlappedBoxRow.click();
+  await page.locator('.tool-group button').filter({ hasText: 'Move' }).click();
+  await page.getByRole('button', { name: /^Front$/i }).click();
+  await page.waitForTimeout(250);
+  const overlapCanvas = await page.locator('canvas').boundingBox();
+  if (!overlapCanvas) throw new Error('Gizmo-overlap viewport canvas missing');
+  const overlapCenterX = overlapCanvas.x + overlapCanvas.width * 0.5;
+  const overlapCenterY = overlapCanvas.y + overlapCanvas.height * 0.385;
+  await page.screenshot({ path: artifact('gizmo-overlap-before.png') });
+  await page.mouse.move(overlapCenterX + 70, overlapCenterY);
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: artifact('gizmo-overlap-hover.png') });
+  await page.mouse.down();
+  await page.mouse.move(overlapCenterX + 120, overlapCenterY, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  const gizmoOverlap = await saveScene('browser-gizmo-overlap');
+  const movedBehindBox = gizmoOverlap.scene.objects.find(object => object.name === 'Box 1');
+  const unchangedOccluder = gizmoOverlap.scene.objects.find(object => object.name === 'Sphere 1');
+  if (!movedBehindBox || movedBehindBox.positionMm[0] <= 5) throw new Error('Overlapped move gizmo did not manipulate its selected box');
+  if (!unchangedOccluder || unchangedOccluder.positionMm[0] !== 0 || unchangedOccluder.positionMm[2] !== 50) throw new Error('Occluding object changed during gizmo drag');
+  if (!await overlappedBoxRow.evaluate(element => element.classList.contains('selected'))) throw new Error('Clicking the overlapped gizmo changed selection to the occluding object');
+  await page.screenshot({ path: artifact('gizmo-overlap-after.png') });
+
+  // Repeated box-corner editing must remain available after conversion to a mesh.
+  await openEmpty();
+  await page.getByRole('button', { name: /create a box/i }).click();
+  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
+  await page.getByRole('button', { name: /^Front$/i }).click();
+  await page.waitForTimeout(250);
+  const cornerCanvas = await page.locator('canvas').boundingBox();
+  if (!cornerCanvas) throw new Error('Corner-edit viewport canvas missing');
+  let cornerX = cornerCanvas.x + cornerCanvas.width * 0.584;
+  let cornerY = cornerCanvas.y + cornerCanvas.height * 0.272;
+  const dragCorner = async (deltaX, deltaY) => {
+    await page.mouse.move(cornerX, cornerY); await page.mouse.down();
+    await page.mouse.move(cornerX + deltaX, cornerY + deltaY, { steps: 10 }); await page.mouse.up();
+    cornerX += deltaX; cornerY += deltaY; await page.waitForTimeout(150);
+  };
+  await dragCorner(30, -20);
+  const firstCornerEdit = await saveScene('browser-corner-first');
+  const firstMesh = firstCornerEdit.scene.objects[0].shape;
+  assertClosedMesh(firstMesh, 'First corner edit');
+  if (firstMesh.editableVertices?.length !== 8) throw new Error('First corner edit did not retain all eight editable vertices');
+  await page.getByText(/Box-derived editable mesh/i).waitFor();
+  await page.screenshot({ path: artifact('corner-first.png') });
+  await dragCorner(25, -15);
+  const secondCornerEdit = await saveScene('browser-corner-second');
+  const secondMesh = secondCornerEdit.scene.objects[0].shape;
+  assertClosedMesh(secondMesh, 'Second corner edit');
+  if (secondMesh.editableVertices?.length !== 8) throw new Error('Second corner edit lost editable vertex handles');
+  if (JSON.stringify(secondMesh.vertices) === JSON.stringify(firstMesh.vertices)) throw new Error('Second corner drag did not update mesh geometry');
+  await page.screenshot({ path: artifact('corner-second.png') });
+  await page.getByRole('button', { name: /Undo/i }).click();
+  const cornerUndo = await saveScene('browser-corner-undo');
+  if (JSON.stringify(cornerUndo.scene.objects[0].shape.vertices) !== JSON.stringify(firstMesh.vertices)) throw new Error('Corner-edit undo did not restore the first edit');
+  await page.getByRole('button', { name: /Redo/i }).click();
+  const cornerRedo = await saveScene('browser-corner-redo');
+  if (JSON.stringify(cornerRedo.scene.objects[0].shape.vertices) !== JSON.stringify(secondMesh.vertices)) throw new Error('Corner-edit redo did not restore the second edit');
+  await page.locator('input[type=file]').setInputFiles(secondCornerEdit.path);
+  const cornerReload = await saveScene('browser-corner-reloaded');
+  if (JSON.stringify(cornerReload.scene.objects[0].shape) !== JSON.stringify(secondMesh)) throw new Error('Corner-edited mesh changed during JSON round trip');
+  await page.getByRole('button', { name: /Box 1.*mesh/i }).click();
+  await page.getByText(/Drag gold corners on box-derived meshes/i).waitFor();
+  await page.screenshot({ path: artifact('corner-reloaded-handles.png') });
+  await dragCorner(15, -10);
+  const postReloadCornerEdit = await saveScene('browser-corner-post-reload');
+  assertClosedMesh(postReloadCornerEdit.scene.objects[0].shape, 'Post-reload corner edit');
+  if (JSON.stringify(postReloadCornerEdit.scene.objects[0].shape.vertices) === JSON.stringify(secondMesh.vertices)) throw new Error('Reloaded editable mesh did not accept another corner drag');
 
   // A sphere-family primitive has independent canonical radii and editable axis handles.
   await openEmpty();
@@ -130,6 +241,7 @@ try {
   await page.getByRole('button', { name: /^Apply$/i }).click();
   const firstMeshRow = page.getByRole('button', { name: /Sphere 1 Union mesh/i });
   await firstMeshRow.waitFor();
+  await page.getByText(/Applied Boolean mesh/i).waitFor();
   await page.locator('.tool-group button').filter({ hasText: 'Move' }).click();
   await page.screenshot({ path: artifact('boolean-move-gizmo.png') });
   await page.locator('.tool-group button').filter({ hasText: 'Rotate' }).click();
@@ -178,7 +290,7 @@ try {
 
   if (externalRequests.length) throw new Error(`External requests detected: ${externalRequests.join(', ')}`);
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
-  console.log('Browser workflows passed: box and ellipsoid shape handles, history, group/move/ungroup, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load safety.');
+  console.log('Browser workflows passed: overlapped gizmo priority, box faces, repeated/reloaded corner editing, ellipsoid handles, history, group/move/ungroup, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load safety.');
 } finally {
   await browser.close();
 }

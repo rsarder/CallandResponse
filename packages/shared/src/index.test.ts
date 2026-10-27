@@ -73,6 +73,30 @@ describe('scene executor', () => {
     expect(result.objects[0]?.scale).toEqual([2, 0.5, 1.25]);
   });
 
+  it('keeps box-derived mesh corners editable across repeated edits and JSON round trips', () => {
+    const vertices: Vec3[] = [
+      [-10, -15, -20], [10, -15, -20], [10, 15, -20], [-10, 15, -20],
+      [-10, -15, 20], [10, -15, 20], [10, 15, 20], [-10, 15, 20],
+    ];
+    const triangles: [number, number, number][] = [[0, 3, 2], [0, 2, 1], [4, 5, 6], [4, 6, 7], [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5], [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2]];
+    const first = tx(scene(), [
+      { type: 'set_custom_mesh', targetId: 'box-1', vertices, triangles },
+      { type: 'set_mesh_vertex', targetId: 'box-1', index: 6, positionMm: [14, 18, 22] },
+    ]);
+    expect(first.objects[0]?.shape).toMatchObject({ kind: 'mesh', editableVertices: [0, 1, 2, 3, 4, 5, 6, 7] });
+    const second = tx(first, [{ type: 'set_mesh_vertex', targetId: 'box-1', index: 6, positionMm: [17, 21, 24] }]);
+    if (second.objects[0]?.shape.kind !== 'mesh') throw new Error('Expected editable mesh');
+    expect(second.objects[0].shape.vertices[6]).toEqual([17, 21, 24]);
+    expect(inspectMeshTopology(second.objects[0].shape.triangles).closed).toBe(true);
+    expect(parseSceneJson(JSON.stringify(second))).toEqual(second);
+
+    expect(() => tx(second, [{ type: 'set_mesh_vertex', targetId: 'box-1', index: 6, positionMm: [10, 15, -20] }])).toThrow('nondegenerate');
+    expect(second.objects[0].shape.vertices[6]).toEqual([17, 21, 24]);
+    expect(() => tx(scene(), [{ type: 'set_custom_mesh', targetId: 'box-1', vertices, triangles: triangles.slice(0, -1) }])).toThrow('eight-vertex, twelve-triangle');
+    const brokenTopology = [...triangles.slice(0, -1), triangles[0]!] as [number, number, number][];
+    expect(() => tx(scene(), [{ type: 'set_custom_mesh', targetId: 'box-1', vertices, triangles: brokenTopology }])).toThrow('closed');
+  });
+
   it('stretches all six faces while anchoring their opposites', () => {
     const faces: BoxFace[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
     for (const face of faces) {

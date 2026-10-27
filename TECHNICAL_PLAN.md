@@ -316,7 +316,7 @@ export type Shape =
       kind: "mesh";
       vertices: Vec3[];
       triangles: [number, number, number][];
-      editableVertexIndices?: number[];
+      editableVertices?: number[];
     }
   | {
       kind: "empty";
