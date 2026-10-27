@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from 'react';
 import { Euler, Quaternion, MathUtils } from 'three';
 import { meshBounds, parseSceneJson, type SceneObject, type SceneOperation, type Vec3 } from '@call-and-response/shared';
 import { analyzeIntersections, booleanMesh, type BooleanKind, type IntersectionAnalysis } from './geometry/csg';
@@ -6,6 +6,53 @@ import { deleteSubtreeOperations, duplicateSubtreeOperations, groupOperations, u
 import { reparentOperations } from './geometry/transforms';
 import { Viewport } from './scene/Viewport';
 import { useEditor, type ObjectTool, type WorkspaceMode } from './state/editor';
+import { useGestureTracking } from './gesture/useGestureTracking';
+import type { GestureFrame, TrackedHand } from './gesture/types';
+import { confidentGesture, handToViewportNdc, isPinchActive, normalizedPinchDistance } from './gesture/math';
+
+const handConnections: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
+];
+
+function HandVisualization({ frame, enabled }: { frame: GestureFrame; enabled: boolean }) {
+  if (!enabled || !frame.hands.length) return null;
+  const hand = frame.hands[0]!;
+  const tip = hand.landmarks[8];
+  const cursorX = tip ? (1 - tip.x) * 100 : 0;
+  const cursorY = tip ? tip.y * 100 : 0;
+  return <>
+    <svg className="hand-landmarks" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+      {frame.hands.map((tracked, handIndex) => <g key={`${tracked.handedness}-${handIndex}`} className="hand-skeleton">
+        {handConnections.map(([from, to], index) => {
+          const first = tracked.landmarks[from]!; const second = tracked.landmarks[to]!;
+          return <line key={index} x1={1 - first.x} y1={first.y} x2={1 - second.x} y2={second.y} />;
+        })}
+        {tracked.landmarks.map((point, index) => <circle key={index} className={index === 4 || index === 8 ? 'finger-tip' : ''} cx={1 - point.x} cy={point.y} r={index === 0 ? 0.009 : 0.005} />)}
+      </g>)}
+    </svg>
+    <div className="hand-cursor" style={{ left: `${cursorX}%`, top: `${cursorY}%` }} aria-label="Tracked hand pointer"><span /><small>{hand.gesture === 'None' ? 'HAND' : hand.gesture.replaceAll('_', ' ')}</small></div>
+  </>;
+}
+
+function GestureCameraPanel({ video, status, error, start, stop }: {
+  video: RefObject<HTMLVideoElement | null>;
+  status: ReturnType<typeof useGestureTracking>['status'];
+  error: string | null;
+  start: () => Promise<void>;
+  stop: () => void;
+}) {
+  const running = status === 'tracking' || status === 'loading';
+  return <section className={`gesture-camera gesture-camera-${status}`} aria-label="Hand tracking camera">
+    <video ref={video} className="webcam-preview" autoPlay muted playsInline hidden={!running} />
+    <div className="gesture-camera-footer">
+      <span className="gesture-status"><i />{status === 'tracking' ? 'HANDS LIVE' : status === 'loading' ? 'LOADING MODEL' : status === 'requesting' ? 'REQUESTING CAMERA' : status === 'error' ? 'TRACKING ERROR' : 'CAMERA OFF'}</span>
+      {running || status === 'requesting' ? <button onClick={stop}>Disable</button> : <button onClick={() => { void start(); }}>Enable hand tracking</button>}
+    </div>
+    <small className="gesture-privacy">Camera frames are processed on device and not saved. MediaPipe may send usage metrics.</small>
+    {error && <small className="gesture-error" role="status">{error}</small>}
+  </section>;
+}
 
 const modes: { id: WorkspaceMode; label: string; key: string }[] = [
   { id: 'object', label: 'Object', key: '1' }, { id: 'shape', label: 'Shape', key: '2' }, { id: 'view', label: 'View', key: '3' },
@@ -204,6 +251,15 @@ function useKeyboard() {
 
 export function App() {
   useKeyboard();
+  const gesture = useGestureTracking();
+  const gestureModeRef = useRef<WorkspaceMode>('object');
+  const lastGestureFrameRef = useRef(0);
+  const gestureStateRef = useRef({
+    pinch: false, pinchPoint: { x: 0, y: 0 }, pinchMode: 'object' as WorkspaceMode, missingSince: 0,
+    point: { x: -1, y: -1, since: 0, tappedAt: 0 }, motion: { name: '', since: 0, x: 0, y: 0 },
+    lastHandCenter: null as { x: number; y: number } | null, lastThumbAction: 0,
+    twoHandDistance: 0, twoHandLostSince: 0, twoHandScale: null as Vec3 | null, twoHandTarget: null as string | null,
+  });
   const fileRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -263,6 +319,113 @@ export function App() {
     ];
     if (state.transact(operations, 'mouse')) { state.setBooleanPreview(null); state.select(id); }
   };
+  const resetGesture = (cancel: boolean) => {
+    const current = gestureStateRef.current;
+    if (cancel && current.pinch && current.pinchMode !== 'view') useEditor.getState().sendGesturePointer({ phase: 'cancel', x: current.pinchPoint.x, y: current.pinchPoint.y });
+    if (cancel && current.twoHandTarget) useEditor.getState().clearPreview();
+    gestureStateRef.current = { ...current, pinch: false, missingSince: 0, point: { x: -1, y: -1, since: 0, tappedAt: current.point.tappedAt }, motion: { name: '', since: 0, x: 0, y: 0 }, lastHandCenter: null, twoHandDistance: 0, twoHandLostSince: 0, twoHandScale: null, twoHandTarget: null };
+  };
+  useEffect(() => {
+    const state = gestureStateRef.current;
+    if (gestureModeRef.current !== mode) { resetGesture(true); gestureModeRef.current = mode; }
+    if (gesture.status !== 'tracking') { resetGesture(true); return; }
+    const currentFrame = gesture.frame;
+    if (!currentFrame.timestamp || currentFrame.timestamp === lastGestureFrameRef.current) return;
+    lastGestureFrameRef.current = currentFrame.timestamp;
+    const now = performance.now();
+    const hands = currentFrame.hands;
+    const primary = hands[0];
+    if (!primary || primary.landmarks.length < 21) {
+      if (state.pinch && !state.missingSince) state.missingSince = now;
+      if (state.pinch && now - state.missingSince > 250) resetGesture(true);
+      state.point.since = 0; state.lastHandCenter = null; state.motion.name = '';
+      if (state.twoHandTarget && !state.twoHandLostSince) state.twoHandLostSince = now;
+      if (state.twoHandTarget && now - state.twoHandLostSince > 250) resetGesture(true);
+      return;
+    }
+    state.missingSince = 0;
+    const indexTip = primary.landmarks[8]!;
+    const normalizedPinch = normalizedPinchDistance(primary.landmarks);
+    const gestureName = confidentGesture(primary.gesture, primary.confidence);
+    const pointing = gestureName === 'Pointing_Up';
+    const pinching = isPinchActive(normalizedPinch, state.pinch);
+    const fistGrab = mode === 'object' && gestureName === 'Closed_Fist';
+    const ndc = handToViewportNdc(indexTip);
+    const virtual = { x: (ndc.x + 1) / 2, y: (1 - ndc.y) / 2 };
+    const centerPoint = primary.landmarks[9]!;
+    const handCenter = { x: 1 - centerPoint.x, y: centerPoint.y };
+
+    if (pointing && !state.pinch && now - state.point.tappedAt > 700) {
+      const distance = Math.hypot(virtual.x - state.point.x, virtual.y - state.point.y);
+      if (distance > 0.035 || !state.point.since) { state.point = { x: virtual.x, y: virtual.y, since: now, tappedAt: state.point.tappedAt }; }
+      else if (now - state.point.since >= 650) {
+        useEditor.getState().sendGesturePointer({ phase: 'tap', ...ndc });
+        state.point.tappedAt = now; state.point.since = 0;
+      }
+    } else if (!state.pinch) state.point.since = 0;
+
+    const startPinch = (pinching || fistGrab) && !state.pinch;
+    if (startPinch) {
+      state.pinch = true; state.pinchMode = mode; state.pinchPoint = virtual;
+      state.lastHandCenter = handCenter;
+      if (mode !== 'view') useEditor.getState().sendGesturePointer({ phase: 'down', ...ndc });
+    } else if (state.pinch && (pinching || fistGrab)) {
+      if (state.pinchMode === 'view' && state.lastHandCenter) useEditor.getState().cameraGesture('zoom', 0, handCenter.y - state.lastHandCenter.y);
+      else useEditor.getState().sendGesturePointer({ phase: 'move', ...ndc });
+      state.pinchPoint = virtual; state.lastHandCenter = handCenter;
+    } else if (state.pinch) {
+      if (state.pinchMode !== 'view') useEditor.getState().sendGesturePointer({ phase: 'up', ...ndc });
+      state.pinch = false; state.lastHandCenter = null;
+    }
+
+    const dynamicPose = mode === 'view' && !state.pinch && (gestureName === 'Open_Palm' || gestureName === 'Victory');
+    if (dynamicPose) {
+      if (state.motion.name !== gestureName) state.motion = { name: gestureName, since: now, x: handCenter.x, y: handCenter.y };
+      else if (now - state.motion.since >= 180) {
+        const dx = handCenter.x - state.motion.x; const dy = handCenter.y - state.motion.y;
+        if (Math.abs(dx) + Math.abs(dy) > 0.001) useEditor.getState().cameraGesture(gestureName === 'Open_Palm' ? 'pan' : 'orbit', dx, dy);
+        state.motion.x = handCenter.x; state.motion.y = handCenter.y;
+      }
+    } else state.motion.name = '';
+
+    if ((gestureName === 'Thumb_Up' || gestureName === 'Thumb_Down') && now - state.lastThumbAction > 850) {
+      if (state.motion.name !== gestureName) state.motion = { name: gestureName, since: now, x: handCenter.x, y: handCenter.y };
+      else if (now - state.motion.since > 350) {
+        state.lastThumbAction = now; state.motion.name = '';
+        const editor = useEditor.getState();
+        if (mode === 'view') editor.camera(gestureName === 'Thumb_Up' ? 'focus' : 'reset');
+        else if (gestureName === 'Thumb_Down') editor.cancel();
+        else if (editor.booleanPreview) confirmBoolean();
+      }
+    }
+
+    if (hands.length >= 2) {
+      const centerOf = (hand: TrackedHand) => hand.landmarks[9]!;
+      const first = centerOf(hands[0]!); const second = centerOf(hands[1]!);
+      const separation = Math.hypot(first.x - second.x, first.y - second.y);
+      if (mode === 'view') {
+        if (state.twoHandDistance) useEditor.getState().cameraGesture('zoom', 0, (state.twoHandDistance - separation) * 0.7);
+        state.twoHandDistance = separation;
+      } else if (mode === 'object' && useEditor.getState().selectedId && !state.pinch) {
+        const editorState = useEditor.getState();
+        const object = editorState.scene.objects.find(item => item.id === editorState.selectedId);
+        if (object && !state.twoHandScale) { state.twoHandScale = object.scale; state.twoHandTarget = object.id; state.twoHandDistance = separation; }
+        else if (object && state.twoHandTarget === object.id && state.twoHandScale && state.twoHandDistance > 0) {
+          const ratio = Math.max(0.1, Math.min(10, separation / state.twoHandDistance));
+          const scale: Vec3 = [state.twoHandScale[0] * ratio, state.twoHandScale[1] * ratio, state.twoHandScale[2] * ratio];
+          useEditor.getState().previewOperations([{ type: 'set_object_scale', targetId: object.id, scale }], 'gesture');
+          state.twoHandDistance = Math.max(0.001, state.twoHandDistance);
+        }
+      }
+      state.twoHandLostSince = 0;
+    } else if (state.twoHandTarget) {
+      const editor = useEditor.getState();
+      const preview = editor.preview;
+      if (preview && preview.id === state.twoHandTarget) editor.transact([{ type: 'set_object_scale', targetId: preview.id, scale: preview.scale }], 'gesture');
+      else editor.clearPreview();
+      state.twoHandTarget = null; state.twoHandScale = null; state.twoHandDistance = 0;
+    }
+  }, [gesture.frame, gesture.status, mode, selectedId, confirmBoolean]);
   const dropSelection = (parentId: string | null) => {
     const state = useEditor.getState();
     const ids = state.selectedIds.length ? state.selectedIds : [];
@@ -333,7 +496,7 @@ export function App() {
       </aside>
       <main className="main-area">
         <div className="viewport-toolbar"><div className="tool-group"><span className="toolbar-label">TOOLS</span>{tools.map(item => <button key={item.id} title={`${item.label} · ${item.key}`} disabled={mode !== 'object'} className={tool === item.id && mode === 'object' ? 'active' : ''} onClick={() => useEditor.getState().setTool(item.id)}><span>{item.icon}</span><small>{item.label}</small></button>)}</div><div className="toolbar-end"><span className={`mode-pill mode-${mode}`}>{mode.toUpperCase()} MODE</span></div></div>
-        <div className="canvas-wrap"><Viewport onContextMenu={(x, y) => setContextMenu({ x, y })} />{!scene.objects.length && <div className="canvas-empty"><div className="empty-illustration">◇</div><h1>Start with a shape</h1><p>Add a primitive and begin shaping your scene.</p><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}>+ Create a box</button></div>}</div>
+        <div className="canvas-wrap"><Viewport onContextMenu={(x, y) => setContextMenu({ x, y })} /><HandVisualization frame={gesture.frame} enabled={gesture.status === 'tracking'} /><GestureCameraPanel video={gesture.video} status={gesture.status} error={gesture.error} start={gesture.start} stop={gesture.stop} />{!scene.objects.length && <div className="canvas-empty"><div className="empty-illustration">◇</div><h1>Start with a shape</h1><p>Add a primitive and begin shaping your scene.</p><button disabled={mode === 'view'} onClick={() => createPrimitive('box')}>+ Create a box</button></div>}</div>
         <div className="camera-bar"><div className="axis-controls"><span>AXIS</span>{(['x', 'y', 'z'] as const).map(axis => <button key={axis} className={axisLock === axis ? `active axis-${axis}` : ''} onClick={() => useEditor.getState().setAxisLock(axisLock === axis ? null : axis)} aria-pressed={axisLock === axis}>{axis.toUpperCase()}</button>)}<button onClick={() => useEditor.getState().setAxisLock(null)}>Free</button></div><div className="camera-controls"><span>CAMERA</span>{(['perspective', 'front', 'top', 'right'] as const).map(action => <button key={action} onClick={() => useEditor.getState().camera(action)}>{action === 'perspective' ? 'Perspective' : action[0]!.toUpperCase() + action.slice(1)}</button>)}<button title="Focus selected · F" onClick={() => useEditor.getState().camera('focus')}>Focus</button><button onClick={() => useEditor.getState().camera('reset')}>Reset</button></div></div>
       </main>
       <aside className="right-panel"><div className="panel-heading"><span>INSPECTOR</span><span className="panel-index">PROPERTIES</span></div><Inspector object={selected} /><div className="shortcuts"><div className="panel-heading"><span>QUICK KEYS</span></div><p><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Modes</p><p><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> Tools</p><p><kbd>X</kbd><kbd>Y</kbd><kbd>Z</kbd> Axis lock</p><p><kbd>F</kbd> Focus selection</p><p><kbd>Esc</kbd> Cancel preview</p></div></aside>

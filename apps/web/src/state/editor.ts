@@ -18,6 +18,19 @@ export interface BooleanPreviewState {
   parentId?: string;
 }
 
+export interface GesturePointerInput {
+  phase: 'hover' | 'tap' | 'down' | 'move' | 'up' | 'cancel';
+  x: number;
+  y: number;
+}
+
+export interface CameraGestureInput {
+  kind: 'pan' | 'orbit' | 'zoom';
+  x: number;
+  y: number;
+  sequence: number;
+}
+
 interface EditorState {
   scene: SceneDocument;
   past: SceneDocument[];
@@ -36,6 +49,11 @@ interface EditorState {
   cameraAction: CameraAction;
   cameraSeq: number;
   cancelSeq: number;
+  gesturePointerHandler: ((input: GesturePointerInput) => void) | null;
+  cameraGestureInput: CameraGestureInput | null;
+  cameraGesture: (kind: CameraGestureInput['kind'], x: number, y: number) => void;
+  setGesturePointerHandler: (handler: ((input: GesturePointerInput) => void) | null) => void;
+  sendGesturePointer: (input: GesturePointerInput) => void;
   select: (id: string | null, additive?: boolean) => void;
   setFace: (face: BoxFace | null) => void;
   setMode: (mode: WorkspaceMode) => void;
@@ -45,7 +63,7 @@ interface EditorState {
   cancel: () => void;
   setError: (error: string | null) => void;
   previewOperation: (operation: SceneOperation) => void;
-  previewOperations: (operations: SceneOperation[]) => void;
+  previewOperations: (operations: SceneOperation[], source?: SceneTransaction['source']) => void;
   clearPreview: () => void;
   setBooleanPreview: (preview: BooleanPreviewState | null) => void;
   setTransformHandleHovered: (hovered: boolean) => void;
@@ -66,6 +84,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   mode: 'object', tool: 'select', axisLock: null, preview: null, booleanPreview: null, error: null,
   transformHandleHovered: false, transformDragging: false,
   cameraAction: 'reset', cameraSeq: 0, cancelSeq: 0,
+  gesturePointerHandler: null, cameraGestureInput: null,
+  cameraGesture: (kind, x, y) => set(state => ({ cameraGestureInput: { kind, x, y, sequence: (state.cameraGestureInput?.sequence ?? 0) + 1 } })),
+  setGesturePointerHandler: gesturePointerHandler => set({ gesturePointerHandler }),
+  sendGesturePointer: input => get().gesturePointerHandler?.(input),
   select: (selectedId, additive = false) => set(state => {
     if (!selectedId) return { selectedId: null, selectedIds: [], selectedFace: null, preview: null, booleanPreview: null };
     const selectedIds = additive
@@ -83,10 +105,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   previewOperation: operation => {
     get().previewOperations([operation]);
   },
-  previewOperations: operations => {
+  previewOperations: (operations, source = 'mouse') => {
     try {
       const { scene } = get();
-      const result = applyTransaction(scene, { expectedRevision: scene.revision, source: 'mouse', operations });
+      const result = applyTransaction(scene, { expectedRevision: scene.revision, source, operations });
       const targetId = operations.find(operation => 'targetId' in operation)?.targetId;
       set({ preview: result.objects.find(o => o.id === targetId) ?? null, error: null });
     } catch (error) {

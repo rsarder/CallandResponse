@@ -124,6 +124,8 @@ Pinch is detected manually from landmark distances.
 
 Use a single primary inference pipeline unless profiling demonstrates a need for another implementation.
 
+Camera capture is opt-in and begins only after the user selects **Enable hand tracking**. The video preview is mirrored for the user; normalized landmark coordinates are mirrored once when mapped into viewport coordinates. Show the 21-point hand skeleton in a screen-aligned overlay on the modeling viewport. Webcam-relative depth is not calibrated world position, so the overlay must not be presented as a world-registered VR hand. Process camera frames locally, do not record or save them, and explain that MediaPipe may send usage metrics.
+
 ### 3.2 Custom pinch detection
 
 Calculate the distance between the index fingertip and thumb tip.

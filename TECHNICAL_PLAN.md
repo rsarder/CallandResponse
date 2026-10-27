@@ -602,6 +602,8 @@ Use one contextual interaction controller.
 
 Never interpret the same pose independently in multiple competing subsystems.
 
+Webcam capture is explicitly enabled by the user. Keep a mirrored live preview beside the viewport and render the same recognizer's 21 normalized hand landmarks as a screen-aligned skeleton overlay. This overlay improves visual understanding but is not calibrated world-space tracking. Run inference away from the UI thread when supported, serve the model and WASM runtime locally, and keep conventional editing usable when permissions or tracking fail.
+
 Detailed mappings belong in `INTERACTION_SPEC.md`.
 
 ## 11. Camera system

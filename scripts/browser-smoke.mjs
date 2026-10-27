@@ -3,36 +3,42 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const resultsDir = resolve('test-results', 'browser');
-const baseUrl = (process.env.BROWSER_TEST_BASE_URL ?? 'http://localhost:5173').replace(/\/$/, '');
-const baseOrigin = new URL(baseUrl).origin;
+const editorUrl = (process.env.BROWSER_TEST_BASE_URL?.trim() || process.env.EDITOR_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '');
+const editorOrigin = new URL(editorUrl).origin;
 await mkdir(resultsDir, { recursive: true });
 const artifact = name => resolve(resultsDir, name);
-const editorUrl = (process.env.EDITOR_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '');
-const editorOrigin = new URL(editorUrl).origin;
 
-const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+const executablePath = process.env.CHROME_PATH?.trim() || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
+const channel = process.env.CHROME_CHANNEL?.trim() || 'chrome';
 let browser;
 try {
   browser = await chromium.launch({
     headless: true,
-    ...(executablePath ? { executablePath } : { channel: 'chrome' }),
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
+    ...(executablePath ? { executablePath } : { channel }),
+    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
   });
 } catch (error) {
   throw new Error(
-    'Could not launch Chrome. Install Google Chrome or set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to its executable.',
+    `Could not launch Chrome. Install Google Chrome or set CHROME_PATH to its executable. ${error instanceof Error ? error.message : ''}`,
     { cause: error },
   );
 }
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+await page.context().grantPermissions(['camera'], { origin: editorOrigin });
 const errors = [];
 const externalRequests = [];
 page.on('pageerror', error => errors.push(error.message));
-page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
-page.on('request', request => { if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== baseOrigin) externalRequests.push(request.url()); });
+page.on('console', message => {
+  if (message.type() !== 'error') return;
+  const text = message.text();
+  // MediaPipe writes this successful CPU delegate initialization message at console.error level.
+  if (text.startsWith('INFO: Created TensorFlow Lite XNNPACK delegate for CPU.')) return;
+  errors.push(`${text} ${message.location().url}`);
+});
+page.on('request', request => { if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== editorOrigin) externalRequests.push(request.url()); });
 
 async function openEmpty() {
-  await page.goto(`${baseUrl}/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
+  await page.goto(`${editorUrl}/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: /create a box/i }).waitFor();
   if (!await page.getByText(/Your scene is empty/i).isVisible()) throw new Error('Fresh browser scenario did not start with an empty scene');
 }
@@ -77,6 +83,16 @@ function assertClosedMesh(shape, label) {
 try {
   // Conventional transforms and an actual Shape-mode handle drag.
   await openEmpty();
+  await page.getByRole('button', { name: /Enable hand tracking/i }).click();
+  try { await page.getByText('HANDS LIVE', { exact: true }).waitFor({ timeout: 30_000 }); }
+  catch (error) {
+    const status = await page.locator('.gesture-camera').innerText();
+    await page.screenshot({ path: artifact('gesture-camera-error.png') });
+    throw new Error(`Fake webcam gesture setup failed: ${status}`, { cause: error });
+  }
+  await page.screenshot({ path: artifact('gesture-camera-and-landmarks.png') });
+  await page.getByRole('button', { name: 'Disable' }).click();
+  await page.getByText('CAMERA OFF', { exact: true }).waitFor();
   await page.getByRole('button', { name: /create a box/i }).click();
   await page.getByRole('button', { name: /Box 1 box/i }).waitFor();
   await page.getByLabel('Width').fill('60'); await page.getByLabel('Width').press('Tab');
@@ -287,7 +303,7 @@ try {
 
   if (externalRequests.length) throw new Error(`External requests detected: ${externalRequests.join(', ')}`);
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
-  console.log('Browser workflows passed: overlapped gizmo priority, box faces, repeated/reloaded corner editing, ellipsoid handles, history, group/move/ungroup, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load safety.');
+  console.log('Browser workflows passed: fake-webcam MediaPipe startup/disable, overlapped gizmo priority, box faces, repeated/reloaded corner editing, ellipsoid handles, history, group/move/ungroup, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load safety.');
 } finally {
   await browser.close();
 }

@@ -3,7 +3,7 @@ import { Canvas, events as createPointerEvents, type ThreeEvent, useThree } from
 import { Edges, OrbitControls, OrthographicCamera, PerspectiveCamera, TransformControls } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl, TransformControls as TransformControlsImpl } from 'three-stdlib';
 import {
-  DoubleSide, Group, Matrix4, Object3D,
+  DoubleSide, Group, Matrix4, Object3D, Spherical,
   OrthographicCamera as ThreeOrthographicCamera, PerspectiveCamera as ThreePerspectiveCamera,
   Plane, Quaternion, Vector3,
 } from 'three';
@@ -14,6 +14,7 @@ import {
 import { meshGeometry } from '../geometry/csg';
 import { localTransformForWorld, parentWorldMatrixFor, worldMatrixFor } from '../geometry/transforms';
 import { useEditor } from '../state/editor';
+import { GestureCanvasBridge } from '../gesture/GestureCanvasBridge';
 
 const faces: BoxFace[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
 const HANDLE_INTERACTION_PRIORITY = 100;
@@ -44,6 +45,7 @@ function CameraRig() {
   const { camera, set, size } = useThree();
   const cameraAction = useEditor(state => state.cameraAction);
   const cameraSeq = useEditor(state => state.cameraSeq);
+  const cameraGestureInput = useEditor(state => state.cameraGestureInput);
   const isOrtho = cameraAction === 'front' || cameraAction === 'top' || cameraAction === 'right';
   useEffect(() => {
     const desired = isOrtho ? orthographic.current : perspective.current;
@@ -69,6 +71,32 @@ function CameraRig() {
     camera.up.set(0, cameraAction === 'top' ? 0 : 1, cameraAction === 'top' ? -1 : 0);
     controls.current.target.copy(target); camera.updateProjectionMatrix(); controls.current.update();
   }, [camera, cameraAction, cameraSeq, isOrtho]);
+  useEffect(() => {
+    const input = cameraGestureInput;
+    const control = controls.current;
+    if (!input || !control || camera !== (isOrtho ? orthographic.current : perspective.current)) return;
+    const target = control.target;
+    if (input.kind === 'pan') {
+      const distance = camera.position.distanceTo(target);
+      const amount = distance * 1.7;
+      const right = new Vector3().setFromMatrixColumn(camera.matrix, 0).normalize();
+      const up = new Vector3().setFromMatrixColumn(camera.matrix, 1).normalize();
+      const delta = right.multiplyScalar(-input.x * amount).add(up.multiplyScalar(input.y * amount));
+      camera.position.add(delta); target.add(delta);
+    } else if (input.kind === 'orbit') {
+      const offset = camera.position.clone().sub(target);
+      const spherical = new Spherical().setFromVector3(offset);
+      spherical.theta -= input.x * Math.PI * 1.8;
+      spherical.phi = Math.max(0.04, Math.min(Math.PI - 0.04, spherical.phi + input.y * Math.PI * 1.8));
+      camera.position.copy(target).add(new Vector3().setFromSpherical(spherical)); camera.lookAt(target);
+    } else if (input.kind === 'zoom') {
+      const scale = Math.exp(Math.max(-0.12, Math.min(0.12, input.y * 2.2)));
+      const offset = camera.position.clone().sub(target).multiplyScalar(scale);
+      const distance = Math.max(8, Math.min(10000, offset.length()));
+      camera.position.copy(target).add(offset.normalize().multiplyScalar(distance));
+    }
+    control.update();
+  }, [camera, cameraGestureInput, isOrtho, size.height, size.width]);
   return <>
     <PerspectiveCamera ref={perspective} fov={50} near={0.1} far={100000} position={[160, 120, 160]} />
     <OrthographicCamera ref={orthographic} args={[-size.width / 2, size.width / 2, size.height / 2, -size.height / 2, 0.1, 100000]} zoom={4} position={[0, 0, 190]} />
@@ -192,7 +220,7 @@ function FaceHandles({ object }: { object: SceneObject }) {
     const direction = new Vector3(axis === 0 ? sign : 0, axis === 1 ? sign : 0, axis === 2 ? sign : 0);
     const rotation = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), direction);
     const axisColor = axis === 0 ? '#ff7068' : axis === 1 ? '#75e39a' : '#6ba8ff'; const color = selectedFace === face ? '#ffdd8a' : axisColor;
-    return <group key={face} position={position} quaternion={rotation} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY }} onPointerDown={event => onDown(event, face)} onPointerMove={onMove} onPointerUp={onUp}>
+    return <group key={face} position={position} quaternion={rotation} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY, gestureFace: face }} onPointerDown={event => onDown(event, face)} onPointerMove={onMove} onPointerUp={onUp}>
       <mesh position={[0, length / 2, 0]}><cylinderGeometry args={[radius, radius, length, 8]} /><meshBasicMaterial color={color} depthTest={false} /></mesh>
       <mesh position={[0, length + radius * 1.5, 0]}><coneGeometry args={[radius * 2.25, radius * 4, 10]} /><meshBasicMaterial color={color} depthTest={false} /></mesh>
       <mesh position={[0, length * 0.65, 0]}><sphereGeometry args={[Math.max(2.4, radius * 2.4), 10, 8]} /><meshBasicMaterial transparent opacity={0} depthWrite={false} /></mesh>
@@ -242,7 +270,7 @@ function VertexHandles({ object }: { object: SceneObject }) {
   };
   if (!editableIndices.length) return null;
   const handleSize = Math.max(1.8, Math.min(4, Math.max(...dimensionsFor(object)) * 0.04));
-  return <group ref={handleRoot}>{editableIndices.map(index => <mesh key={index} position={shownVertices[index]!} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY }} onPointerDown={event => onDown(event, index)} onPointerMove={onMove} onPointerUp={onUp}>
+  return <group ref={handleRoot}>{editableIndices.map(index => <mesh key={index} position={shownVertices[index]!} userData={{ interactionPriority: HANDLE_INTERACTION_PRIORITY, gestureVertex: index }} onPointerDown={event => onDown(event, index)} onPointerMove={onMove} onPointerUp={onUp}>
     <octahedronGeometry args={[handleSize, 0]} /><meshStandardMaterial color="#ffc86a" emissive="#b56c16" emissiveIntensity={0.25} depthTest={false} />
   </mesh>)}</group>;
 }
@@ -306,7 +334,7 @@ function EditableObject({ object, scene }: { object: SceneObject; scene: SceneDo
       const reset = matrixParts(worldMatrixFor(scene, object)); current.position.copy(reset.position); current.quaternion.copy(reset.quaternion); current.scale.copy(reset.scale);
     }
   };
-  const content = <group ref={group} position={parts.position} quaternion={parts.quaternion} scale={parts.scale}>
+  const content = <group ref={group} position={parts.position} quaternion={parts.quaternion} scale={parts.scale} userData={{ sceneObjectId: object.id }}>
     <ShapeMesh object={shown} selected={selected} />
     {selected && mode === 'shape' && <>
       {(object.shape.kind === 'box' || object.shape.kind === 'cylinder' || object.shape.kind === 'sphere') && <FaceHandles object={object} />}
@@ -340,7 +368,7 @@ function WorkspaceScene() {
     <directionalLight position={[90, 160, 80]} intensity={2.4} castShadow shadow-mapSize={[2048, 2048]} />
     <gridHelper args={[1000, 100, '#537092', '#29435f']} position={[0, -0.05, 0]} /><axesHelper args={[60]} />
     {scene.objects.map(object => <EditableObject key={object.id} object={object} scene={scene} />)}
-    <BooleanPreviewMesh scene={scene} /><CameraRig />
+    <BooleanPreviewMesh scene={scene} /><GestureCanvasBridge /><CameraRig />
   </>;
 }
 

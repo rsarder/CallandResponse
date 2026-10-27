@@ -1,6 +1,6 @@
 # Call and Response
 
-Call and Response is an offline-first, browser-based 3D modeling editor. The current product provides a conventional modeling workspace with parametric primitives, hierarchy, precise transforms, shape editing, Boolean solid modeling, history, and editable JSON projects. Webcam gestures, voice input, and Muse Spark are intentionally not part of this stabilization milestone.
+Call and Response is an offline-first, browser-based 3D modeling editor. The product provides a conventional modeling workspace with parametric primitives, hierarchy, precise transforms, shape editing, Boolean solid modeling, history, and editable JSON projects. Optional webcam gesture controls are now being integrated; the conventional editor remains usable without a camera.
 
 ## What you can do
 
@@ -18,6 +18,7 @@ Call and Response is an offline-first, browser-based 3D modeling editor. The cur
 - See advisory overlap markers: `!` is a verified positive-volume intersection and `?` is a broad-phase candidate that was not yet exactly checked.
 - Undo and redo complete edits. A completed drag or hierarchy/Boolean transaction is one history step; camera movement is not history.
 - Save the editable scene as validated JSON and reopen it later. Invalid files are rejected without replacing the current scene.
+- Optionally enable webcam hand tracking for point/dwell, pinch editing, and View-mode hand navigation. The live preview and landmark skeleton are visible alongside the modeled scene.
 
 ## Start the editor
 
@@ -61,6 +62,12 @@ Primitive origins are their natural centers. Boolean results are recentered arou
 
 See [docs/DECISIONS.md](docs/DECISIONS.md) for the detailed invariants and hierarchy/Boolean policies.
 
+## Optional webcam gestures
+
+Choose **Enable hand tracking** in the viewport's camera panel to request camera access. The camera stays off until enabled. The preview is mirrored, inference runs in a worker, and the hand landmarks are drawn over the modeling viewport as a screen-aligned visual guide. A regular webcam does not provide calibrated absolute 3D hand position, so this overlay is not a world-registered VR hand model. Webcam frames are processed on device and are not saved by the editor; MediaPipe may send usage metrics. Current gesture mappings follow [INTERACTION_SPEC.md](INTERACTION_SPEC.md); mouse, keyboard, and toolbar controls remain available.
+
+The MediaPipe Gesture Recognizer model and WebAssembly runtime are served from the local app assets. They are distributed under MediaPipe's Apache 2.0 license. Model source: [Google AI Edge Gesture Recognizer web guide](https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer/web_js).
+
 ## Validation commands
 
 Run these from the repository root after `npm ci`. Unit tests, typechecking, linting, and builds do not require Chrome or a running development server.
@@ -84,7 +91,9 @@ For the browser regression journey, install Google Chrome, start `npm run dev` i
 npm run test:browser
 ```
 
-The browser test launches the installed Google Chrome through Playwright's cross-platform `chrome` channel, at a 1440 x 900 viewport with software WebGL. The same commands work on Windows and macOS. If Chrome is installed in a nonstandard location, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable before running `npm run test:browser`. It drives user-visible controls and covers shape dragging/history, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
+The browser test launches the installed Google Chrome through Playwright's cross-platform `chrome` channel, at a 1440 x 900 viewport with software WebGL and a fake webcam. It checks that the locally served MediaPipe model/WASM initialize and that tracking can be disabled, then drives user-visible controls through shape dragging/history, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. The fake webcam does not validate real gesture accuracy. The same commands work on Windows and macOS. For a nonstandard Chrome location use `CHROME_PATH` (or `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`); use `CHROME_CHANNEL` to select a Playwright-supported channel. To target another running editor, set `BROWSER_TEST_BASE_URL` or `EDITOR_URL`. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
+
+For a real camera check, open the app at `http://localhost:5173`, choose **Enable hand tracking**, and grant camera access. Hold one hand in view and check that its mirrored preview, skeleton, and pointer follow it. In Object mode, point/dwell over an object and pinch/drag it; in Shape mode, pinch/drag a visible handle; in View mode, try open-palm pan, Victory orbit, and pinch zoom. Denying permission or selecting **Disable** must leave normal mouse editing usable.
 
 PowerShell path override:
 

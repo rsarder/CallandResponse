@@ -1,6 +1,6 @@
 # Call and Response — development tracker
 
-Updated: October 27, 2026. Multimodal development remains frozen while the final conventional-editor verification pass is active. STAB-1 is complete; this pass is limited to repeated box-corner editing, portable editor tests, and directly related correctness or documentation issues.
+Updated: October 27, 2026. The user has approved starting the gesture milestone after the conventional 3D editor shell and stabilization work. Gesture integration is now active; STAB-1 remains complete and is not being reopened.
 
 ## EDITOR-1 — final conventional-editor verification (implementation complete; Mac check pending)
 
@@ -64,9 +64,15 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 
 ## M2 — P0 gesture-based interaction
 
-- [ ] **GEST-01** P0, owner Developer A (planned), deps CORE-03 — One MediaPipe recognizer, hand cursor, explicit enable/disable, and tracking state. Accept: stable mirrored pointer and fully usable offline mouse fallback.
-- [ ] **GEST-02** P0, owner Developer A (planned), deps GEST-01/CORE-04 — Point/dwell selection and hysteresis-based pinch. Accept: repeatable selection with low false activation on demo hardware.
-- [ ] **GEST-03** P0, owner Developer A (planned), deps GEST-02/CORE-02 — Contextual pinch move and face stretch through the shared operation system. Accept: target locking, tracking-loss cancel, and one transaction per drag.
+- [ ] **GEST-01** P0, owner Codex (implemented; hardware verification pending), deps CORE-03 — One locally served MediaPipe recognizer, explicit camera enable/disable, webcam preview, tracking status, and in-viewport hand landmarks. Fake-webcam browser journey verifies model/WASM startup and clean disable. Still needs validation on a real camera; denial/model failure preserve conventional controls.
+- [ ] **GEST-02** P0, owner Codex, deps GEST-01/CORE-04 — Mirrored pointer, dwell selection, normalized hysteresis pinch, target/action lock, and cancellation. Accept: repeatable selection and no accidental release/drag action on tracking loss.
+- [ ] **GEST-03** P0, owner Codex, deps GEST-02/CORE-02 — Contextual Object/Shape pinch move and face/corner editing through validated previews/transactions. Accept: one history entry per drag, target locking, lost tracking cancels, and camera-only gestures create no scene edits.
+- [ ] **GEST-04** P1, owner Codex, deps GEST-02 — Fist grab, View open-palm pan/Victory orbit/pinch zoom, thumbs-up/down focus/reset/confirm/cancel, stable debounce, and camera alternative controls.
+- [ ] **GEST-05** P2, owner Codex, deps GEST-03 — Two-hand separation zoom and optional Object-mode uniform scaling, gated behind reliable two-hand tracking.
+
+### Gesture integration checkpoint
+
+- [x] **GEST-CHECK-01** P0, owner Codex, deps GEST-01 — Fake-webcam Playwright path initializes the local recognizer model/WASM, reaches tracking status, and disables cleanly. This verifies setup/lifecycle only; no real gesture classification is inferred from the fake camera.
 
 ## M3 — P0 Muse Spark integration
 
@@ -97,6 +103,18 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 
 ## Blockers and next priority
 
-No conventional-editor implementation blocker remains. The only open editor checkpoint is running `npm ci`, the standard checks, and `npm run test:browser` on the teammate's Mac to close **TEST-PORT-01** with real-device evidence. Do not add generic post-Boolean Shape editing: applied Boolean meshes intentionally remain Object-mode meshes and reusable Boolean inputs. After the Mac check and product review, the repository is ready for the separately scoped gesture and Muse milestones without changing the geometry invariants established by STAB-1.
+No conventional-editor implementation blocker remains. The Mac test checkpoint **TEST-PORT-01** is still open. Gesture testing requires a real webcam and browser permission; fake-device browser coverage will validate UI/lifecycle but cannot prove recognition reliability. MediaPipe inference runs on-device; the browser still requires an available webcam and a supported secure context (localhost is allowed). Do not add generic post-Boolean Shape editing: applied Boolean meshes intentionally remain Object-mode meshes and reusable Boolean inputs.
 
-Hackathon submission target: November 4, 2026, 9:00 PM ET. Webcam, voice, and Muse Spark development remains frozen until this stabilization result is accepted.
+## Known issues
+
+- Gesture reliability and thresholds have not been calibrated on the team's real cameras. Two-hand and pose actions need real-device trials before they can be called verified.
+- The hand skeleton is a mirrored screen-space visualization; webcam landmarks do not provide calibrated absolute world position.
+- The production bundle retains the existing large-chunk warning. Gesture model and WASM files add roughly 28 MB of locally served assets so tracking does not depend on a runtime CDN.
+
+## Next recommended tasks
+
+1. Run the real-camera workflow in README and tune dwell/pinch thresholds against the demo hardware; complete GEST-02/03 only after target lock, cancel, and one-transaction drag behavior are confirmed.
+2. Verify hand pan/orbit/zoom, thumbs actions, and two-hand scaling on actual cameras; review accidental activation before closing GEST-04/05.
+3. Run `npm ci` and the full standard/browser checks on the teammate's Mac to close TEST-PORT-01.
+
+Hackathon submission target: November 4, 2026, 9:00 PM ET. The conventional-editor stabilization remains accepted. Gesture integration is the active milestone; voice and Muse Spark remain queued behind M2 validation and the P0 quality gate.
