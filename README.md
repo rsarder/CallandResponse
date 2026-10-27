@@ -84,17 +84,6 @@ For the browser regression journey, install Google Chrome, start `npm run dev` i
 npm run test:browser
 ```
 
-<<<<<<< Updated upstream
-The browser test launches the installed stable Google Chrome channel on Windows or macOS at a 1440 x 900 viewport. It drives user-visible controls and covers face and repeated corner editing, undo/redo, ellipsoids, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
-
-The test reports a direct setup error when the editor is not running or Chrome cannot be found. Nonstandard installations can be selected with `CHROME_PATH`; a different running editor URL can be selected with `EDITOR_URL`. For example on macOS:
-
-```sh
-CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm run test:browser
-```
-
-`npm run test:browser` is the only check that requires Chrome and a separately running `npm run dev`. Use Node.js 22 or newer on every development machine.
-=======
 The browser test launches the installed Google Chrome through Playwright's cross-platform `chrome` channel, at a 1440 x 900 viewport with software WebGL. The same commands work on Windows and macOS. If Chrome is installed in a nonstandard location, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its executable before running `npm run test:browser`. It drives user-visible controls and covers shape dragging/history, grouping and ungrouping, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load preservation. Screenshots and downloaded scenes are written under `test-results/browser/` and ignored by Git.
 
 PowerShell path override:
@@ -111,7 +100,6 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="/path/to/Google Chrome" npm run test:browse
 ```
 
 If the dev server is running on another URL, set `BROWSER_TEST_BASE_URL` (for example, `http://localhost:5174`) before running the browser test.
->>>>>>> Stashed changes
 
 ## Current limitations
 
