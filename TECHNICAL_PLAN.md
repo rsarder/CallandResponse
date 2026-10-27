@@ -310,7 +310,16 @@ export type Shape =
     }
   | {
       kind: "sphere";
-      radiusMm: number;
+      radiiMm: Vec3;
+    }
+  | {
+      kind: "mesh";
+      vertices: Vec3[];
+      triangles: [number, number, number][];
+      editableVertexIndices?: number[];
+    }
+  | {
+      kind: "empty";
     };
 
 export interface SceneObject {
@@ -319,21 +328,22 @@ export interface SceneObject {
   shape: Shape;
   positionMm: Vec3;
   rotation: Quat;
-  material: {
+  scale: Vec3;
+  parentId?: string;
+  material?: {
     colorHex: string;
+    opacity: number;
   };
 }
 
 export interface SceneDocument {
-  schemaVersion: 1;
+  schemaVersion: 2;
   revision: number;
   objects: SceneObject[];
 }
 ```
 
-Future geometric types may include explicitly defined polygonal meshes with vertices and connectivity.
-
-Do not assume arbitrary imported meshes support primitive-specific editing operations.
+Version 1 documents are migrated during load. Do not assume arbitrary meshes support primitive-specific editing operations.
 
 ### 6.3 Ephemeral editor state
 
@@ -893,13 +903,13 @@ A feature is complete only when:
 - Three.js Raycaster: https://threejs.org/docs/pages/Raycaster.html
 - Three.js BufferGeometry: https://threejs.org/docs/pages/BufferGeometry.html
 - Three.js GLTFExporter: https://threejs.org/docs/pages/GLTFExporter.html
-- Optional CSG library: https://github.com/gkjohnson/three-bvh-csg
+- Manifold CSG library: https://github.com/elalish/manifold
 
 **Core engineering principle:** The scene is a validated data model. Mouse interactions, gestures, and AI requests are different interfaces to the same deterministic modeling operations.
 
 ## 21. Approved editable hierarchy and mesh extension
 
-The scene schema remains version 1 and adds backward-compatible optional fields: material opacity (effective default `0.5`), `parentId`, and `scaleMm` for Empty transforms. Empty shapes have no material. Existing version 1 files without opacity continue to load as half-opacity solids.
+The canonical scene schema is version 2. Every object has local position, quaternion rotation, and scale; primitives and indexed mesh vertices remain in object-local coordinates. Version 1 documents migrate on load (`scaleMm` to `scale`, scalar sphere radius to three equal radii, and missing opacity to `0.5`). Empty shapes have no material.
 
 Shapes now also include:
 
@@ -908,10 +918,14 @@ Shapes now also include:
 | { kind: 'mesh'; vertices: Vec3[]; triangles: [number, number, number][]; editableVertices?: number[] }
 ```
 
-Mesh triangles must reference distinct existing vertices and cannot be degenerate. Box corner editing converts the box to an indexed mesh with eight exposed corner handles. CSG output meshes remain transformable; they do not pretend to remain parametric primitives.
+Mesh triangles must reference distinct existing vertices and cannot be degenerate. Closed-solid operations additionally require watertight manifold topology. Box corner editing converts the box to an indexed mesh with eight exposed corner handles. CSG output meshes remain transformable and reusable as CSG inputs; they do not pretend to remain parametric primitives and do not expose unsupported Shape-mode handles.
 
-Empty objects can parent scene objects. Their position and rotation are local to the parent; their transforms are inherited by descendants. Reparenting computes local transforms from world matrices, and Group creates an Empty at the selected world-space center. The inspector labels child transforms as local. Empty group scale is uniform to keep reparented transforms representable without shear.
+Empty objects can parent scene objects. Their transform is local to the parent and inherited by descendants. Reparenting computes a new local transform from the preserved world matrix; transformations that require shear are rejected. Group creates an Empty at the average selected world pivot. Ungroup preserves direct-child world transforms, nested groups remain intact, and group duplication recursively remaps descendants. Empty group scale is uniform to keep reparented transforms representable without shear.
 
-Union and subtraction use `three-bvh-csg` 0.0.17 on closed solids. The first selected object is the target and the second is the cutter. The computed mesh is previewed with source objects still visible, then applied atomically by creating one mesh object and deleting both sources. CSG failures leave sources unchanged.
+Union, subtraction, and intersection use `manifold-3d` on closed solids. Inputs are normalized indexed geometry, transformed exactly once to world space, and evaluated without requiring authored UVs. Output property seams are resolved from Manifold's explicit merge vectors (not heuristic rewelding), then the mesh is compacted, checked for closed topology, converted to the chosen parent space, and recentered around a bounds-center pivot. The first selected object is the target and the second is the cutter. The result retains a parent only when both operands share that parent; otherwise it is placed at the root. Apply creates one mesh and deletes both sources atomically. Failures leave sources unchanged.
 
-Opacity is a validated `[0,1]` material property and defaults to `0.5` for newly created solids. Hierarchy overlap warnings use positive-volume CSG intersection; grouped objects are checked, empties are skipped, and tangential contact is not reported.
+Opacity is a validated `[0,1]` material property and defaults to `0.5` for newly created solids. Overlap analysis is scheduled outside React render: world bounds form a broad phase, a bounded number of candidate pairs receive exact positive-volume intersections, and candidates, verified intersections, limits, and failures are reported distinctly. Empties are skipped and tangential contact is not reported.
+
+Sphere-family primitives use independent X/Y/Z radii. Equal radii represent a sphere; unequal radii represent an ellipsoid. Shape-mode radius edits modify these canonical radii, while Object-mode scale remains a separate transform.
+
+The detailed coordinate-space, pivot, hierarchy, CSG, and overlap policies are recorded in `docs/DECISIONS.md`.

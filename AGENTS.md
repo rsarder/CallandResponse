@@ -359,7 +359,7 @@ Next recommended task:
 - Three.js Raycaster: https://threejs.org/docs/pages/Raycaster.html
 - Three.js GLTFExporter: https://threejs.org/docs/pages/GLTFExporter.html
 - Three.js BufferGeometry: https://threejs.org/docs/pages/BufferGeometry.html
-- Optional CSG: https://github.com/gkjohnson/three-bvh-csg
+- Manifold CSG: https://github.com/elalish/manifold
 
 **North star:** a functional 3D editor that stays useful without AI, plus a striking, reliable interaction where a person physically reshapes geometry with a webcam gesture and Muse Spark precisely understands and edits **that same geometry** through natural language.
 

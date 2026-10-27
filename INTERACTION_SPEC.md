@@ -716,8 +716,8 @@ The most important user experience is intuitive physical manipulation followed b
 
 - Shape mode displays colored axis arrows with shafts and arrowheads at the current editable boundary. During a drag, the previewed handle follows the changed edge or radius.
 - Boxes expose six face arrows and eight visually distinct corner handles. A corner drag converts the box to an indexed custom mesh on first edit, then moves the shared logical corner vertex. Box faces continue to use the anchored face-stretch operation.
-- Spheres expose six radial radius arrows. Cylinders expose four radial radius arrows and two cap-height arrows; cap drags preserve the opposite cap plane.
-- Boolean-result meshes remain selectable and support object transforms. Corner handles are reserved for box-derived custom meshes.
+- Sphere-family primitives expose six radial arrows that independently edit X, Y, and Z radii, allowing true ellipsoids without using object scale. Cylinders expose four radial radius arrows and two cap-height arrows; cap drags preserve the opposite cap plane.
+- Boolean-result meshes remain selectable and support object transforms. Their read-only dimensions come from computed local bounds. Arbitrary Boolean meshes do not display fake primitive handles; corner handles are reserved for box-derived custom meshes with declared editable vertices.
 
 ### Opacity and empty objects
 
@@ -727,13 +727,15 @@ The most important user experience is intuitive physical manipulation followed b
 ### Hierarchy and grouping
 
 - Shift-click toggles multi-selection in the hierarchy and viewport.
-- Right-click opens a cursor-positioned menu with Group, Union, and Subtract.
+- Right-click opens a cursor-positioned menu with Group, Ungroup, Union, Subtract, and Intersection. Actions that do not apply to the current selection are disabled.
 - Group creates an Empty parent at the selected objects' world-space center and reparents the selection without changing its world pose. Inspector position and rotation values then show local space.
-- Dragging onto an Empty makes the selection its children; dragging above or below a hierarchy row reorders siblings; dropping in the root area ungroups/reparents to scene root while preserving world pose.
+- Ungroup reparents the selected group's direct children to its parent without changing their world pose and removes the group. Nested groups remain intact. An empty group is simply removed. Group duplication recursively duplicates and remaps the descendant subtree.
+- Dragging onto an Empty makes the selection its children; dragging above or below a hierarchy row reorders siblings; dropping in the root area reparents to scene root while preserving world pose. Invalid cycles, non-Empty parents, and transforms requiring shear are rejected visibly.
 - Empty parent transforms inherit through the scene tree. Group scale is currently represented as a uniform Empty transform.
 
 ### Boolean preview and overlap warnings
 
-- Union and Subtract require exactly two selected solids. The first selected object is the target; the second is the cutter. Empty objects and objects with children cannot be boolean inputs.
-- The preview leaves the inputs visible and overlays the computed result. Apply replaces both inputs with one validated indexed mesh in one scene transaction; cancel preserves both inputs.
-- A non-blocking hierarchy warning identifies objects whose closed-solid intersection has positive volume. Group membership does not suppress the warning. Empty objects are excluded. Touching surfaces without intersecting volume are not warned.
+- Union, Subtract, and Intersection require exactly two selected closed solids. The first selected object is the target; the second is the cutter. Empty objects and objects with children cannot be Boolean inputs; select solid descendants of a group.
+- The preview leaves the inputs visible and overlays the computed result. Apply replaces both inputs with one validated indexed local-space mesh in one scene transaction; cancel preserves both inputs. The result remains transformable, serializable, and valid for later chained Boolean operations.
+- Results use a bounds-center local pivot. They retain a parent only when both inputs share that parent; otherwise the result is placed at scene root.
+- A non-blocking hierarchy warning identifies objects whose closed-solid intersection has positive volume. A separate candidate marker identifies broad-phase bounds overlap that was not exactly verified because work is bounded. Failures and analysis limits are surfaced. Group membership does not suppress checks, empties are excluded, and touching surfaces without intersecting volume are not warned.

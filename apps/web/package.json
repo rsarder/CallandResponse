@@ -15,10 +15,10 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.180.0",
+    "manifold-3d": "^3.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.180.0",
-    "three-bvh-csg": "^0.0.17",
     "zustand": "^5.0.0"
   }
 }

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  applyTransaction, emptyScene, SceneDocumentSchema, type BoxFace, type SceneDocument,
+  applyTransaction, emptyScene, parseSceneDocument, type BoxFace, type SceneDocument,
   type SceneObject, type SceneOperation, type SceneTransaction, type Vec3,
 } from '@call-and-response/shared';
 
@@ -8,7 +8,15 @@ export type WorkspaceMode = 'object' | 'shape' | 'view';
 export type ObjectTool = 'select' | 'move' | 'rotate' | 'scale';
 export type AxisLock = 'x' | 'y' | 'z' | null;
 export type CameraAction = 'reset' | 'focus' | 'front' | 'top' | 'right' | 'perspective';
-export interface BooleanPreviewState { kind: 'union' | 'subtract'; targetId: string; cutterId: string; vertices: Vec3[]; triangles: [number, number, number][] }
+export interface BooleanPreviewState {
+  kind: 'union' | 'subtract' | 'intersect';
+  targetId: string;
+  cutterId: string;
+  vertices: Vec3[];
+  triangles: [number, number, number][];
+  positionMm: Vec3;
+  parentId?: string;
+}
 
 interface EditorState {
   scene: SceneDocument;
@@ -117,7 +125,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   }),
   load: input => {
     try {
-      const parsed = SceneDocumentSchema.parse(input);
+      const parsed = parseSceneDocument(input);
       const { scene, past } = get();
       set({
         scene: { ...parsed, revision: Math.max(scene.revision, parsed.revision) + 1 },

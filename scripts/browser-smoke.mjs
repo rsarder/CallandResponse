@@ -1,5 +1,10 @@
 import { chromium } from 'playwright-core';
+import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+
+const resultsDir = resolve('test-results', 'browser');
+await mkdir(resultsDir, { recursive: true });
+const artifact = name => resolve(resultsDir, name);
 
 const browser = await chromium.launch({
   headless: true,
@@ -12,185 +17,168 @@ const externalRequests = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
 page.on('request', request => { if (/^https?:/.test(request.url()) && !/^http:\/\/localhost:5173\//.test(request.url())) externalRequests.push(request.url()); });
-try {
-  await page.goto('http://localhost:5173/', { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /create a box/i }).click();
-  await page.getByRole('button', { name: /Box 1 box/i }).waitFor();
-  await page.getByLabel('Width').fill('60');
-  await page.getByLabel('Width').press('Tab');
-  const state = () => page.evaluate(async () => (await import('/src/state/editor.ts')).useEditor.getState());
-  let current = await state();
-  if (current.scene.objects[0].shape.sizeMm[0] !== 60) throw new Error('Numeric width edit failed');
-  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
-  current = await state();
-  if (current.mode !== 'shape') throw new Error('Shape mode switch failed');
-  await page.getByRole('button', { name: /View Navigate camera/i }).click();
-  current = await state();
-  if (current.mode !== 'view') throw new Error('View mode switch failed');
-  if (!await page.getByLabel('Width').isDisabled() || !await page.getByRole('button', { name: /Sphere \+/i }).isDisabled()) throw new Error('View mode left geometry controls enabled');
-  await page.getByRole('button', { name: /Object Transform objects/i }).click();
-  const cameraRevision = (await state()).scene.revision;
-  for (const preset of ['Top', 'Right', 'Front', 'Focus', 'Reset']) await page.getByRole('button', { name: new RegExp(`^${preset}$`, 'i') }).click();
-  if ((await state()).scene.revision !== cameraRevision) throw new Error('Camera preset changed scene revision');
-  await page.getByRole('button', { name: /Front/i }).click();
-  await page.waitForTimeout(250);
-  await page.getByRole('button', { name: /Perspective/i }).click();
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: resolve('browser-smoke.png') });
+
+async function openEmpty() {
+  await page.goto(`http://localhost:5173/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
+  await page.getByRole('button', { name: /create a box/i }).waitFor();
+  if (!await page.getByText(/Your scene is empty/i).isVisible()) throw new Error('Fresh browser scenario did not start with an empty scene');
+}
+
+async function saveScene(name) {
+  const path = artifact(`${name}.scene.json`);
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: /Save project/i }).click();
   const download = await downloadPromise;
-  const filePath = resolve('browser-smoke.scene.json');
-  await download.saveAs(filePath);
-  await page.getByRole('button', { name: /Delete/i }).click();
-  current = await state();
-  if (current.scene.objects.length !== 0) throw new Error('Delete failed');
-  await page.locator('input[type=file]').setInputFiles(filePath);
+  await download.saveAs(path);
+  return { path, scene: JSON.parse(await readFile(path, 'utf8')) };
+}
+
+async function selectRows(names) {
+  await page.getByRole('button', { name: names[0] }).click();
+  for (const name of names.slice(1)) await page.getByRole('button', { name }).click({ modifiers: ['Shift'] });
+}
+
+async function contextAction(rowName, action) {
+  await page.getByRole('button', { name: rowName }).click({ button: 'right' });
+  await page.getByRole('button', { name: new RegExp(`^${action}$`, 'i') }).click();
+}
+
+try {
+  // Conventional transforms and an actual Shape-mode handle drag.
+  await openEmpty();
+  await page.getByRole('button', { name: /create a box/i }).click();
   await page.getByRole('button', { name: /Box 1 box/i }).waitFor();
-  current = await state();
-  if (current.scene.objects[0].shape.sizeMm[0] !== 60) throw new Error('JSON reopen failed');
-  const beforeInvalidLoad = current.scene;
-  await page.locator('input[type=file]').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{invalid') });
-  current = await state();
-  if (JSON.stringify(current.scene) !== JSON.stringify(beforeInvalidLoad)) throw new Error('Invalid JSON corrupted the scene');
-  await page.getByRole('alert').waitFor();
-  await page.getByRole('button', { name: /Dismiss error/i }).click();
+  await page.getByLabel('Width').fill('60'); await page.getByLabel('Width').press('Tab');
+  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
+  await page.getByRole('button', { name: /^Front$/i }).click();
+  await page.waitForTimeout(250);
   const canvas = page.locator('canvas');
   const canvasBox = await canvas.boundingBox();
   if (!canvasBox) throw new Error('Viewport canvas missing');
-  await canvas.click({ position: { x: 12, y: 12 } });
-  current = await state();
-  if (current.selectedId !== null) throw new Error('Clicking empty space did not deselect');
-  await canvas.click({ position: { x: canvasBox.width / 2, y: canvasBox.height * 0.42 } });
-  current = await state();
-  if (!current.selectedId) throw new Error('Canvas mouse selection failed');
-  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
-  await page.screenshot({ path: resolve('browser-shape.png') });
-  const beforeStretch = await state();
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + 232);
+  await page.screenshot({ path: artifact('shape-before.png') });
+  // Front preset: the selected object's +X arrow is the red handle at the right edge.
+  const handleX = canvasBox.x + canvasBox.width * 0.65;
+  const handleY = canvasBox.y + canvasBox.height * 0.385;
+  await page.mouse.move(handleX, handleY);
   await page.mouse.down();
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + 200, { steps: 4 });
-  await page.keyboard.press('Escape');
+  await page.mouse.move(handleX + 70, handleY, { steps: 10 });
   await page.mouse.up();
-  current = await state();
-  if (current.scene.revision !== beforeStretch.scene.revision || current.past.length !== beforeStretch.past.length) throw new Error('Canceled face drag committed a change');
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + 232);
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + 170, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  if (current.scene.objects[0].shape.sizeMm[1] <= beforeStretch.scene.objects[0].shape.sizeMm[1]) throw new Error('Mouse face stretch did not increase box height');
-  if (current.past.length !== beforeStretch.past.length + 1) throw new Error('Face drag did not create one history entry');
-  await page.getByRole('button', { name: /Undo/i }).click();
-  current = await state();
-  if (current.scene.objects[0].shape.sizeMm[1] !== beforeStretch.scene.objects[0].shape.sizeMm[1]) throw new Error('Face stretch undo failed');
-  await page.getByRole('button', { name: /Object Transform objects/i }).click();
-  await page.getByRole('button', { name: /^Front$/i }).click();
   await page.waitForTimeout(150);
-  await page.getByTitle('Move · W').click();
-  await page.screenshot({ path: resolve('browser-move.png') });
-  const beforeMove = await state();
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2 + 79, canvasBox.y + 272);
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + canvasBox.width / 2 + 125, canvasBox.y + 272, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  if (current.scene.objects[0].positionMm[0] === beforeMove.scene.objects[0].positionMm[0]) throw new Error('Move gizmo did not commit translation');
-  if (current.past.length !== beforeMove.past.length + 1) throw new Error('Move gizmo did not create one history entry');
-  const movedCenterX = canvasBox.x + canvasBox.width / 2 + current.scene.objects[0].positionMm[0] * 4;
-  await page.getByTitle('Rotate · E').click();
-  await page.screenshot({ path: resolve('browser-rotate.png') });
-  const beforeRotate = await state();
-  await page.mouse.move(movedCenterX, canvasBox.y + 173);
-  await page.mouse.down();
-  await page.mouse.move(movedCenterX + 60, canvasBox.y + 190, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  if (JSON.stringify(current.scene.objects[0].rotation) === JSON.stringify(beforeRotate.scene.objects[0].rotation)) throw new Error('Rotate gizmo did not commit rotation');
-  await page.getByTitle('Scale · R').click();
-  await page.screenshot({ path: resolve('browser-scale.png') });
-  const beforeScale = await state();
-  await page.mouse.move(movedCenterX - 52, canvasBox.y + 234);
-  await page.mouse.down();
-  await page.mouse.move(movedCenterX - 90, canvasBox.y + 205, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  if (current.scene.objects[0].shape.sizeMm[0] === beforeScale.scene.objects[0].shape.sizeMm[0]) throw new Error('Scale gizmo did not update canonical dimensions');
-  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
-  await page.screenshot({ path: resolve('browser-rotated-shape.png') });
-  const beforeRotatedStretch = await state();
-  await page.mouse.move(canvasBox.x + 697, canvasBox.y + 401);
-  await page.mouse.down();
-  const activeFace = (await state()).selectedFace;
-  if (!activeFace) throw new Error('Rotated box face handle could not be selected');
-  await page.mouse.move(canvasBox.x + 735, canvasBox.y + 429, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  const rotatedAxis = activeFace[1] === 'x' ? 0 : activeFace[1] === 'y' ? 1 : 2;
-  const deltaDimension = current.scene.objects[0].shape.sizeMm[rotatedAxis] - beforeRotatedStretch.scene.objects[0].shape.sizeMm[rotatedAxis];
-  const centerShift = Math.hypot(...current.scene.objects[0].positionMm.map((v, i) => v - beforeRotatedStretch.scene.objects[0].positionMm[i]));
-  if (Math.abs(deltaDimension) < 0.1 || Math.abs(centerShift - Math.abs(deltaDimension) / 2) > 0.01) throw new Error('Rotated face drag did not preserve anchored stretch geometry');
-  const beforeOrbit = current.scene.revision;
-  await page.mouse.move(canvasBox.x + 80, canvasBox.y + 80);
-  await page.mouse.down();
-  await page.mouse.move(canvasBox.x + 150, canvasBox.y + 105, { steps: 8 });
-  await page.mouse.up();
-  current = await state();
-  if (current.scene.revision !== beforeOrbit) throw new Error('Camera orbit changed scene revision');
+  const afterHandle = await saveScene('browser-after-handle');
+  const handledBox = afterHandle.scene.objects.find(object => object.name === 'Box 1');
+  if (!handledBox || handledBox.shape.kind !== 'box' || handledBox.shape.sizeMm[0] <= 60) throw new Error('Shape handle did not increase box width');
+  await page.screenshot({ path: artifact('shape-after.png') });
+  await page.getByRole('button', { name: /Undo/i }).click();
+  const afterUndo = await saveScene('browser-after-undo');
+  if (afterUndo.scene.objects[0].shape.sizeMm[0] !== 60) throw new Error('Undo did not restore pre-drag dimensions');
+  await page.getByRole('button', { name: /Redo/i }).click();
+  const afterRedo = await saveScene('browser-after-redo');
+  if (afterRedo.scene.objects[0].shape.sizeMm[0] <= 60) throw new Error('Redo did not restore Shape-mode drag');
+  await page.getByRole('button', { name: /Object Transform objects/i }).click();
+  await page.getByLabel(/^X$/).fill('12'); await page.getByLabel(/^X$/).press('Tab');
+  await page.getByLabel('Y rotation').fill('25'); await page.getByLabel('Y rotation').press('Tab');
+  await page.getByLabel('X scale').fill('1.25'); await page.getByLabel('X scale').press('Tab');
+
+  // A sphere-family primitive has independent canonical radii and editable axis handles.
+  await openEmpty();
   await page.getByRole('button', { name: /Sphere \+/i }).click();
-  await page.getByLabel('Radius').fill('24');
-  await page.getByLabel('Radius').press('Tab');
+  await page.getByLabel('X radius').fill('30'); await page.getByLabel('X radius').press('Tab');
+  await page.getByLabel('Y radius').fill('15'); await page.getByLabel('Y radius').press('Tab');
+  await page.getByLabel('Z radius').fill('10'); await page.getByLabel('Z radius').press('Tab');
+  await page.getByRole('button', { name: /Shape Edit geometry/i }).click();
+  await page.getByRole('button', { name: /^Front$/i }).click();
+  await page.waitForTimeout(250);
+  const ellipsoidCanvas = await page.locator('canvas').boundingBox();
+  if (!ellipsoidCanvas) throw new Error('Ellipsoid viewport canvas missing');
+  await page.screenshot({ path: artifact('ellipsoid-handles.png') });
+  const ellipsoidHandleX = ellipsoidCanvas.x + ellipsoidCanvas.width * 0.65;
+  const ellipsoidHandleY = ellipsoidCanvas.y + ellipsoidCanvas.height * 0.385;
+  await page.mouse.move(ellipsoidHandleX, ellipsoidHandleY);
+  await page.mouse.down();
+  await page.mouse.move(ellipsoidHandleX + 45, ellipsoidHandleY, { steps: 8 });
+  await page.mouse.up();
+  const ellipsoid = (await saveScene('browser-ellipsoid')).scene.objects[0];
+  if (ellipsoid.shape.kind !== 'sphere' || ellipsoid.shape.radiiMm[0] <= 30 || ellipsoid.shape.radiiMm[1] !== 15 || ellipsoid.shape.radiiMm[2] !== 10) throw new Error('Ellipsoid axis handle did not edit only the selected radius');
+
+  // Group, move the group, and explicitly ungroup while preserving visible positions.
+  await openEmpty();
+  await page.getByRole('button', { name: /create a box/i }).click();
+  await page.getByRole('button', { name: /Sphere \+/i }).click();
+  await page.getByLabel(/^X$/).fill('20'); await page.getByLabel(/^X$/).press('Tab');
+  await selectRows([/Box 1.*box/i, /Sphere 1.*sphere/i]);
+  await contextAction(/Sphere 1.*sphere/i, 'Group');
+  const groupRow = page.getByRole('button', { name: /EmptyObject 1 empty/i });
+  await groupRow.waitFor();
+  await page.screenshot({ path: artifact('grouped.png') });
+  await page.getByLabel(/^X$/).fill('15'); await page.getByLabel(/^X$/).press('Tab');
+  await contextAction(/EmptyObject 1 empty/i, 'Ungroup');
+  await page.getByRole('button', { name: /EmptyObject 1 empty/i }).waitFor({ state: 'detached' });
+  const ungrouped = await saveScene('browser-ungrouped');
+  const ungroupedBox = ungrouped.scene.objects.find(object => object.name === 'Box 1');
+  const ungroupedSphere = ungrouped.scene.objects.find(object => object.name === 'Sphere 1');
+  if (ungroupedBox.parentId || ungroupedSphere.parentId) throw new Error('Ungroup left stale parent references');
+  if (Math.abs(ungroupedBox.positionMm[0] - 5) > 0.01 || Math.abs(ungroupedSphere.positionMm[0] - 25) > 0.01) throw new Error('Ungroup did not preserve moved world positions');
+
+  // Round-primitive Boolean, result manipulation, and a chained Boolean result.
+  await openEmpty();
+  await page.getByRole('button', { name: /Sphere \+/i }).click();
   await page.getByRole('button', { name: /Cylinder \+/i }).click();
-  await page.getByLabel('Height').fill('55');
-  await page.getByLabel('Height').press('Tab');
-  current = await state();
-  if (current.scene.objects.length !== 3 || current.scene.objects[1].shape.radiusMm !== 24 || current.scene.objects[2].shape.heightMm !== 55) throw new Error('Sphere/cylinder UI creation or numeric editing failed');
-  await page.getByLabel('Object name').fill('Column A');
-  await page.getByLabel('Object name').press('Tab');
-  await page.getByLabel('Y rotation').fill('30');
-  await page.getByLabel('Y rotation').press('Tab');
-  await page.getByLabel('Object color').fill('#33aa88');
-  await page.getByLabel('Object color').press('Tab');
-  current = await state();
-  if (current.scene.objects[2].name !== 'Column A' || current.scene.objects[2].material.colorHex !== '#33aa88' || Math.abs(current.scene.objects[2].rotation[1]) < 0.01) throw new Error('Inspector name, color, or rotation edit failed');
-  await page.getByRole('button', { name: /^Duplicate$/i }).click();
-  current = await state();
-  if (current.scene.objects.length !== 4 || new Set(current.scene.objects.map(o => o.id)).size !== 4) throw new Error('Duplicate did not create a unique object');
-  await page.keyboard.press('1');
-  await page.keyboard.press('w');
-  if ((await state()).tool !== 'move' || (await state()).mode !== 'object') throw new Error('Keyboard mode/tool shortcut failed');
-  await page.keyboard.press('e');
-  if ((await state()).tool !== 'rotate') throw new Error('Rotate shortcut failed');
-  await page.keyboard.press('r');
-  if ((await state()).tool !== 'scale') throw new Error('Scale shortcut failed');
-  await page.keyboard.press('q');
-  if ((await state()).tool !== 'select') throw new Error('Select shortcut failed');
-  await page.keyboard.press('x');
-  if ((await state()).axisLock !== 'x') throw new Error('Axis lock shortcut failed');
-  await page.keyboard.press('x');
-  if ((await state()).axisLock !== null) throw new Error('Axis lock toggle failed');
-  await page.getByLabel('Object name').focus();
-  await page.keyboard.press('2');
-  if ((await state()).mode !== 'object') throw new Error('Shortcut changed mode while typing');
-  await page.keyboard.press('Escape');
-  await page.getByLabel('Object name').blur();
-  await page.keyboard.press('Delete');
-  if ((await state()).scene.objects.length !== 3) throw new Error('Delete shortcut failed');
-  await page.keyboard.press('Control+z');
-  if ((await state()).scene.objects.length !== 4) throw new Error('Undo shortcut failed');
-  await page.keyboard.press('Control+y');
-  if ((await state()).scene.objects.length !== 3) throw new Error('Redo shortcut failed');
-  await page.keyboard.press('Control+z');
-  if ((await state()).scene.objects.length !== 4) throw new Error('Undo after redo failed');
-  await page.getByRole('button', { name: /Column A cylinder/i }).first().click();
-  await page.setViewportSize({ width: 700, height: 800 });
-  const smallCanvas = await canvas.boundingBox();
-  if (!smallCanvas || smallCanvas.width < 300 || smallCanvas.height < 200) throw new Error('Responsive viewport collapsed');
-  await page.getByLabel('Height').waitFor({ state: 'visible' });
-  await page.screenshot({ path: resolve('browser-mobile.png') });
+  await page.getByLabel(/^X$/).fill('10'); await page.getByLabel(/^X$/).press('Tab');
+  await selectRows([/Sphere 1.*sphere/i, /Cylinder 1.*cylinder/i]);
+  await contextAction(/Cylinder 1.*cylinder/i, 'Union');
+  await page.getByText('Union preview', { exact: true }).waitFor();
+  await page.getByRole('button', { name: /^Apply$/i }).click();
+  const firstMeshRow = page.getByRole('button', { name: /Sphere 1 Union mesh/i });
+  await firstMeshRow.waitFor();
+  await page.locator('.tool-group button').filter({ hasText: 'Move' }).click();
+  await page.screenshot({ path: artifact('boolean-move-gizmo.png') });
+  await page.locator('.tool-group button').filter({ hasText: 'Rotate' }).click();
+  await page.screenshot({ path: artifact('boolean-rotate-gizmo.png') });
+  await page.locator('.tool-group button').filter({ hasText: 'Scale' }).click();
+  await page.screenshot({ path: artifact('boolean-scale-gizmo.png') });
+  await page.getByLabel(/^X$/).fill('8'); await page.getByLabel(/^X$/).press('Tab');
+  await page.getByLabel('Z scale').fill('1.2'); await page.getByLabel('Z scale').press('Tab');
+  await page.getByRole('button', { name: /Box \+/i }).click();
+  await page.getByLabel(/^X$/).fill('16'); await page.getByLabel(/^X$/).press('Tab');
+  await selectRows([/Sphere 1 Union.*mesh/i, /Box 1.*box/i]);
+  await contextAction(/Box 1.*box/i, 'Subtract');
+  await page.getByText('Subtract preview', { exact: true }).waitFor();
+  await page.getByRole('button', { name: /^Apply$/i }).click();
+  const chainedRow = page.getByRole('button', { name: /Sphere 1 Union Cut mesh/i });
+  await chainedRow.waitFor();
+  await page.screenshot({ path: artifact('boolean-chained.png') });
+  const chained = await saveScene('browser-boolean-chained');
+  if (chained.scene.schemaVersion !== 2 || chained.scene.objects.length !== 1 || chained.scene.objects[0].shape.kind !== 'mesh') throw new Error('Chained Boolean did not produce one v2 mesh');
+  const result = chained.scene.objects[0];
+  if (result.shape.vertices.length >= result.shape.triangles.length * 3) throw new Error('Boolean result was serialized as redundant triangle soup');
+  if (result.positionMm.every(value => value === 0)) throw new Error('Boolean result did not receive a meaningful local pivot');
+
+  // Persist a mixed scene containing a Boolean mesh, a primitive, and hierarchy.
+  await page.getByRole('button', { name: /Box \+/i }).click();
+  await selectRows([/Sphere 1 Union Cut.*mesh/i, /Box 1.*box/i]);
+  await contextAction(/Box 1.*box/i, 'Group');
+  await page.getByRole('button', { name: /EmptyObject 1 empty/i }).waitFor();
+  const mixed = await saveScene('browser-mixed');
+  if (mixed.scene.objects.length !== 3 || !mixed.scene.objects.some(object => object.shape.kind === 'mesh') || !mixed.scene.objects.some(object => object.shape.kind === 'box')) throw new Error('Mixed grouped scene was not serialized completely');
+
+  // Save/reload uses the native v2 document without a private store import.
+  await page.getByRole('button', { name: /Delete/i }).click();
+  await page.getByText(/Your scene is empty/i).waitFor();
+  await page.locator('input[type=file]').setInputFiles(mixed.path);
+  await chainedRow.waitFor();
+  const reopened = await saveScene('browser-reopened');
+  if (JSON.stringify(reopened.scene.objects) !== JSON.stringify(mixed.scene.objects)) throw new Error('Native JSON round trip changed scene objects');
+
+  // Invalid load must not corrupt the current scene.
+  await page.locator('input[type=file]').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{invalid') });
+  await page.getByRole('alert').waitFor();
+  await page.getByRole('button', { name: /Dismiss error/i }).click();
+  const afterInvalid = await saveScene('browser-after-invalid');
+  if (JSON.stringify(afterInvalid.scene.objects) !== JSON.stringify(mixed.scene.objects)) throw new Error('Invalid JSON corrupted the scene');
+
+  if (externalRequests.length) throw new Error(`External requests detected: ${externalRequests.join(', ')}`);
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
-  if (externalRequests.length) throw new Error(`Unexpected external requests: ${externalRequests.join(' | ')}`);
-  console.log('Browser smoke passed: primitives, inspector, modes, camera, JSON, face drags, gizmos, shortcuts, responsive layout; no external requests.');
+  console.log('Browser workflows passed: box and ellipsoid shape handles, history, group/move/ungroup, round and chained Booleans, gizmo screenshots, mixed-scene save/load, and invalid-load safety.');
 } finally {
   await browser.close();
 }

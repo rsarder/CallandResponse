@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import { Euler, Matrix4, Quaternion, MathUtils, Vector3 } from 'three';
-import { parseSceneJson, type SceneObject, type SceneOperation, type Vec3 } from '@call-and-response/shared';
-import { booleanMesh, intersectingPairs, worldMatrixFor, type BooleanKind } from './geometry/csg';
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { Euler, Quaternion, MathUtils } from 'three';
+import { meshBounds, parseSceneJson, type SceneObject, type SceneOperation, type Vec3 } from '@call-and-response/shared';
+import { analyzeIntersections, booleanMesh, type BooleanKind, type IntersectionAnalysis } from './geometry/csg';
+import { deleteSubtreeOperations, duplicateSubtreeOperations, groupOperations, ungroupOperations } from './geometry/hierarchy';
+import { reparentOperations } from './geometry/transforms';
 import { Viewport } from './scene/Viewport';
 import { useEditor, type ObjectTool, type WorkspaceMode } from './state/editor';
 
@@ -28,59 +30,31 @@ function createPrimitive(kind: 'box' | 'cylinder' | 'sphere' | 'empty') {
   if (state.transact([operation], 'mouse')) state.select(id);
 }
 
-function transformOperations(object: SceneObject, local: Matrix4, parentId: string | null): SceneOperation[] {
-  const position = new Vector3(); const rotation = new Quaternion(); const scale = new Vector3();
-  local.decompose(position, rotation, scale);
-  const operations: SceneOperation[] = [];
-  if (object.shape.kind === 'empty') operations.push({ type: 'set_object_scale', targetId: object.id, scaleMm: [scale.x, scale.y, scale.z] });
-  else if (object.shape.kind === 'box') operations.push({ type: 'set_box_dimensions', targetId: object.id, sizeMm: [object.shape.sizeMm[0] * scale.x, object.shape.sizeMm[1] * scale.y, object.shape.sizeMm[2] * scale.z] });
-  else if (object.shape.kind === 'cylinder') {
-    const radial = (scale.x + scale.z) / 2;
-    operations.push({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: object.shape.radiusMm * radial, heightMm: object.shape.heightMm * scale.y });
-  } else if (object.shape.kind === 'sphere') operations.push({ type: 'set_sphere_radius', targetId: object.id, radiusMm: object.shape.radiusMm * (scale.x + scale.y + scale.z) / 3 });
-  else if (object.shape.kind === 'mesh' && (Math.abs(scale.x - 1) + Math.abs(scale.y - 1) + Math.abs(scale.z - 1) > 0.0001))
-    operations.push({ type: 'set_custom_mesh', targetId: object.id, vertices: object.shape.vertices.map(([x, y, z]) => [x * scale.x, y * scale.y, z * scale.z]), triangles: object.shape.triangles });
-  operations.push({ type: 'set_object_position', targetId: object.id, positionMm: [position.x, position.y, position.z] });
-  operations.push({ type: 'rotate_object', targetId: object.id, rotation: [rotation.x, rotation.y, rotation.z, rotation.w] });
-  operations.push({ type: 'reparent_object', targetId: object.id, parentId });
-  return operations;
-}
-
-function reparentOperations(scene: ReturnType<typeof useEditor.getState>['scene'], objectId: string, parentId: string | null): SceneOperation[] {
-  const object = scene.objects.find(item => item.id === objectId);
-  if (!object) return [];
-  const world = worldMatrixFor(scene, object);
-  const parent = parentId ? scene.objects.find(item => item.id === parentId) : undefined;
-  const parentWorld = parent ? worldMatrixFor(scene, parent) : new Matrix4();
-  return transformOperations(object, parentWorld.invert().multiply(world), parentId);
-}
-
 function groupSelected() {
   const state = useEditor.getState();
   const chosen = state.selectedIds.length ? state.selectedIds : state.selectedId ? [state.selectedId] : [];
-  const items = chosen.map(id => state.scene.objects.find(object => object.id === id)).filter((item): item is SceneObject => Boolean(item));
-  if (!items.length) return;
-  const world = items.map(item => worldMatrixFor(state.scene, item));
-  const center = world.reduce((sum, matrix) => sum.add(new Vector3().setFromMatrixPosition(matrix)), new Vector3()).multiplyScalar(1 / world.length);
+  if (!chosen.length) return;
   const emptyNumber = state.scene.objects.filter(object => object.name.startsWith('EmptyObject ')).length + 1;
   const groupId = crypto.randomUUID();
-  const operations: SceneOperation[] = [{ type: 'create_empty', id: groupId, name: `EmptyObject ${emptyNumber}`, positionMm: [center.x, center.y, center.z] }];
-  items.forEach((object, index) => {
-    const local = world[index]!.clone();
-    local.premultiply(new Matrix4().makeTranslation(-center.x, -center.y, -center.z));
-    operations.push(...transformOperations(object, local, groupId));
-  });
-  if (state.transact(operations, 'mouse')) state.select(groupId);
+  try {
+    if (state.transact(groupOperations(state.scene, chosen, groupId, `EmptyObject ${emptyNumber}`), 'mouse')) state.select(groupId);
+  } catch (error) { state.setError(error instanceof Error ? error.message : 'Grouping failed'); }
+}
+
+function ungroupSelected() {
+  const state = useEditor.getState();
+  const group = state.scene.objects.find(object => object.id === state.selectedId && object.shape.kind === 'empty');
+  if (!group) return;
+  try {
+    const children = state.scene.objects.filter(object => object.parentId === group.id);
+    if (state.transact(ungroupOperations(state.scene, group.id), 'mouse')) state.select(children.at(-1)?.id ?? null);
+  } catch (error) { state.setError(error instanceof Error ? error.message : 'Ungroup failed'); }
 }
 
 function deleteSelected() {
   const state = useEditor.getState();
   if (state.mode === 'view' || !state.selectedIds.length) return;
-  const ids = new Set(state.selectedIds);
-  let grew = true;
-  while (grew) { grew = false; state.scene.objects.forEach(object => { if (object.parentId && ids.has(object.parentId) && !ids.has(object.id)) { ids.add(object.id); grew = true; } }); }
-  const depth = (id: string) => { let value = 0; let item = state.scene.objects.find(object => object.id === id); while (item?.parentId) { value++; item = state.scene.objects.find(object => object.id === item!.parentId); } return value; };
-  const operations: SceneOperation[] = [...ids].sort((a, b) => depth(b) - depth(a)).map(targetId => ({ type: 'delete_object', targetId }));
+  const operations = deleteSubtreeOperations(state.scene, state.selectedIds);
   if (state.transact(operations, 'keyboard')) state.select(null);
 }
 
@@ -88,11 +62,11 @@ function duplicateSelected() {
   const state = useEditor.getState();
   const object = state.scene.objects.find(o => o.id === state.selectedId);
   if (state.mode === 'view' || !object) return;
-  const id = crypto.randomUUID();
-  if (state.transact([{ type: 'duplicate_object', targetId: object.id, id, name: `${object.name} copy` }], 'keyboard')) state.select(id);
+  const duplicate = duplicateSubtreeOperations(state.scene, object.id, () => crypto.randomUUID());
+  if (state.transact(duplicate.operations, 'keyboard')) state.select(duplicate.rootId);
 }
 
-function NumberField({ label, value, onCommit, step = 1 }: { label: string; value: number; onCommit: (value: number) => void; step?: number }) {
+function NumberField({ label, value, onCommit, step = 1, readOnly = false }: { label: string; value: number; onCommit: (value: number) => void; step?: number; readOnly?: boolean }) {
   const [draft, setDraft] = useState(String(Number(value.toFixed(3))));
   useEffect(() => setDraft(String(Number(value.toFixed(3)))), [value]);
   const commit = () => {
@@ -104,7 +78,7 @@ function NumberField({ label, value, onCommit, step = 1 }: { label: string; valu
     }
     if (Math.abs(next - value) > 0.00001) onCommit(next);
   };
-  return <label className="number-field"><span>{label}</span><input aria-label={label} type="number" step={step} value={draft} onChange={e => setDraft(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setDraft(String(value)); e.currentTarget.blur(); } }} /></label>;
+  return <label className="number-field"><span>{label}</span><input aria-label={label} type="number" step={step} value={draft} readOnly={readOnly} onChange={e => setDraft(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setDraft(String(value)); e.currentTarget.blur(); } }} /></label>;
 }
 
 function TextField({ value, onCommit }: { value: string; onCommit: (value: string) => void }) {
@@ -139,7 +113,12 @@ function Inspector({ object }: { object: SceneObject | undefined }) {
     }} />)}</div>
     <div className="section-label section-gap">{object.parentId ? 'Local rotation' : 'Rotation'} <small>degrees</small></div>
     <div className="field-grid">{(['X', 'Y', 'Z'] as const).map((label, i) => <NumberField key={label} label={`${label} rotation`} value={angles[i]!} onCommit={v => updateRotation(i, v)} />)}</div>
-    {object.shape.kind === 'empty' && <><div className="section-label section-gap">Transform scale</div><NumberField label="Uniform scale" value={object.scaleMm?.[0] ?? 1} step={0.1} onCommit={v => edit({ type: 'set_object_scale', targetId: object.id, scaleMm: [v, v, v] })} /></>}
+    <div className="section-label section-gap">Object scale</div>
+    {object.shape.kind === 'empty'
+      ? <NumberField label="Uniform scale" value={object.scale[0]} step={0.1} onCommit={v => edit({ type: 'set_object_scale', targetId: object.id, scale: [v, v, v] })} />
+      : <div className="field-grid">{(['X scale', 'Y scale', 'Z scale'] as const).map((label, index) => <NumberField key={label} label={label} value={object.scale[index]!} step={0.1} onCommit={value => {
+        const scale: Vec3 = [...object.scale]; scale[index] = value; edit({ type: 'set_object_scale', targetId: object.id, scale });
+      }} />)}</div>}
     {object.shape.kind !== 'empty' && object.shape.kind !== 'mesh' && <><div className="section-label section-gap">Dimensions <small>mm</small></div>
     {object.shape.kind === 'box' ? <div className="field-grid">{(['Width', 'Height', 'Depth'] as const).map((label, i) => <NumberField key={label} label={label} value={object.shape.kind === 'box' ? object.shape.sizeMm[i]! : 1} onCommit={v => {
       if (object.shape.kind !== 'box') return;
@@ -148,7 +127,12 @@ function Inspector({ object }: { object: SceneObject | undefined }) {
     }} />)}</div> : object.shape.kind === 'cylinder' ? <div className="field-grid two">
       <NumberField label="Radius" value={object.shape.radiusMm} onCommit={v => { if (object.shape.kind === 'cylinder') edit({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: v, heightMm: object.shape.heightMm }); }} />
       <NumberField label="Height" value={object.shape.heightMm} onCommit={v => { if (object.shape.kind === 'cylinder') edit({ type: 'set_cylinder_dimensions', targetId: object.id, radiusMm: object.shape.radiusMm, heightMm: v }); }} />
-    </div> : <NumberField label="Radius" value={object.shape.kind === 'sphere' ? object.shape.radiusMm : 1} onCommit={v => { if (object.shape.kind === 'sphere') edit({ type: 'set_sphere_radius', targetId: object.id, radiusMm: v }); }} />}</>}
+    </div> : <div className="field-grid">{(['X radius', 'Y radius', 'Z radius'] as const).map((label, index) => <NumberField key={label} label={label} value={object.shape.kind === 'sphere' ? object.shape.radiiMm[index]! : 1} onCommit={value => {
+      if (object.shape.kind !== 'sphere') return;
+      const radiiMm: Vec3 = [...object.shape.radiiMm]; radiiMm[index] = value;
+      edit({ type: 'set_ellipsoid_radii', targetId: object.id, radiiMm });
+    }} />)}</div>}</>}
+    {object.shape.kind === 'mesh' && (() => { const bounds = meshBounds(object.shape.vertices); return <><div className="section-label section-gap">Mesh bounds <small>mm · read only</small></div><div className="field-grid">{bounds.size.map((value, index) => <NumberField key={index} label={['Width', 'Height', 'Depth'][index]!} value={value} readOnly onCommit={() => undefined} />)}</div><small>Arbitrary Boolean meshes use Object tools. Shape handles are disabled unless the mesh came from editable box corners.</small></>; })()}
     {object.material && <><div className="section-label section-gap">Material</div>
     <ColorField object={object} />
     <OpacityField key={object.id} object={object} /></>}
@@ -223,6 +207,7 @@ export function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [overlapAnalysis, setOverlapAnalysis] = useState<IntersectionAnalysis>({ verifiedPairs: [], candidatePairs: [], errors: [], limited: false });
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextMenu(null); };
     window.addEventListener('keydown', close);
@@ -238,12 +223,21 @@ export function App() {
   const past = useEditor(s => s.past);
   const future = useEditor(s => s.future);
   const selected = scene.objects.find(o => o.id === selectedId);
-  const overlapPairs = useMemo(() => intersectingPairs(scene), [scene]);
-  const overlapping = useMemo(() => new Set(overlapPairs.flat()), [overlapPairs]);
+  useEffect(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
+      try { const result = analyzeIntersections(scene); if (active) setOverlapAnalysis(result); }
+      catch (failure) { if (active) setOverlapAnalysis({ verifiedPairs: [], candidatePairs: [], errors: [failure instanceof Error ? failure.message : 'Overlap analysis failed'], limited: false }); }
+    }, 120);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [scene]);
+  const overlapping = new Set(overlapAnalysis.verifiedPairs.flat());
+  const overlapCandidates = new Set(overlapAnalysis.candidatePairs.flat());
   const canBoolean = selectedIds.length === 2 && selectedIds.every(id => {
     const item = scene.objects.find(object => object.id === id);
     return item && item.shape.kind !== 'empty' && !scene.objects.some(child => child.parentId === id);
   });
+  const canUngroup = Boolean(selected && selected.shape.kind === 'empty');
   const booleanPreview = useEditor(s => s.booleanPreview);
   const openBoolean = (kind: BooleanKind) => {
     const state = useEditor.getState();
@@ -262,7 +256,7 @@ export function App() {
     if (!target) return;
     const id = crypto.randomUUID();
     const operations: SceneOperation[] = [
-      { type: 'create_mesh', id, name: `${target.name} ${preview.kind === 'union' ? 'Union' : 'Cut'}`, positionMm: [0, 0, 0], vertices: preview.vertices, triangles: preview.triangles },
+      { type: 'create_mesh', id, name: `${target.name} ${preview.kind === 'union' ? 'Union' : preview.kind === 'intersect' ? 'Intersection' : 'Cut'}`, positionMm: preview.positionMm, vertices: preview.vertices, triangles: preview.triangles, parentId: preview.parentId },
       { type: 'set_material_color', targetId: id, colorHex: target.material?.colorHex ?? '#76b7ff' },
       { type: 'set_material_opacity', targetId: id, opacity: target.material?.opacity ?? 0.5 },
       { type: 'delete_object', targetId: preview.targetId }, { type: 'delete_object', targetId: preview.cutterId },
@@ -272,8 +266,12 @@ export function App() {
   const dropSelection = (parentId: string | null) => {
     const state = useEditor.getState();
     const ids = state.selectedIds.length ? state.selectedIds : [];
-    const operations = ids.filter(id => id !== parentId).flatMap(id => reparentOperations(state.scene, id, parentId));
-    if (operations.length) state.transact(operations, 'mouse');
+    try {
+      const operations = ids.filter(id => id !== parentId).flatMap(id => reparentOperations(state.scene, id, parentId));
+      if (operations.length) state.transact(operations, 'mouse');
+    } catch (failure) {
+      state.setError(failure instanceof Error ? failure.message : 'Reparenting failed');
+    }
   };
   const loadFile = async (file: File | undefined) => {
     if (!file) return;
@@ -290,6 +288,7 @@ export function App() {
   };
   const renderHierarchy = (parentId: string | null, depth: number): ReactNode => scene.objects.filter(object => (object.parentId ?? null) === parentId).map(object => {
     const warning = overlapping.has(object.id);
+    const candidate = !warning && overlapCandidates.has(object.id);
     const children = scene.objects.filter(child => child.parentId === object.id);
     const onDrop = (event: DragEvent<HTMLButtonElement>) => {
       event.preventDefault(); event.stopPropagation();
@@ -304,7 +303,7 @@ export function App() {
       } else dropSelection(object.shape.kind === 'empty' ? object.id : object.parentId ?? null);
     };
     return <div key={object.id} className="hierarchy-node"><button draggable className={`hierarchy-row ${selectedIds.includes(object.id) ? 'selected' : ''}`} style={{ paddingLeft: `${9 + depth * 14}px` }} onClick={event => useEditor.getState().select(object.id, event.shiftKey)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); if (!selectedIds.includes(object.id)) useEditor.getState().select(object.id); setContextMenu({ x: event.clientX, y: event.clientY }); }} onDragStart={event => { if (!selectedIds.includes(object.id)) useEditor.getState().select(object.id); event.dataTransfer.setData('text/plain', object.id); event.dataTransfer.effectAllowed = 'move'; }} onDragOver={event => event.preventDefault()} onDrop={onDrop}>
-      <span className="hierarchy-icon">{object.shape.kind === 'box' ? '□' : object.shape.kind === 'sphere' ? '○' : object.shape.kind === 'empty' ? '◇' : object.shape.kind === 'mesh' ? 'M' : '⬡'}</span><span>{object.name}</span>{warning && <small className="overlap-warning" title="This solid intersects another object">⚠</small>}<small>{object.shape.kind}</small>
+      <span className="hierarchy-icon">{object.shape.kind === 'box' ? '□' : object.shape.kind === 'sphere' ? '○' : object.shape.kind === 'empty' ? '◇' : object.shape.kind === 'mesh' ? 'M' : '⬡'}</span><span>{object.name}</span>{warning && <small className="overlap-warning" title="Verified solid intersection">⚠</small>}{candidate && <small className="overlap-warning" title="Bounding boxes overlap; exact analysis is pending or limited">?</small>}<small>{object.shape.kind}</small>
     </button>{children.length > 0 && renderHierarchy(object.id, depth + 1)}</div>;
   });
   return <div className="app-shell" onClick={() => setContextMenu(null)}>
@@ -339,13 +338,15 @@ export function App() {
       </main>
       <aside className="right-panel"><div className="panel-heading"><span>INSPECTOR</span><span className="panel-index">PROPERTIES</span></div><Inspector object={selected} /><div className="shortcuts"><div className="panel-heading"><span>QUICK KEYS</span></div><p><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Modes</p><p><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd><kbd>R</kbd> Tools</p><p><kbd>X</kbd><kbd>Y</kbd><kbd>Z</kbd> Axis lock</p><p><kbd>F</kbd> Focus selection</p><p><kbd>Esc</kbd> Cancel preview</p></div></aside>
     </div>
-    <footer className="statusbar"><span><i className="status-dot" /> READY</span><span>{scene.objects.length} OBJECT{scene.objects.length === 1 ? '' : 'S'}</span><span>{selected ? `SELECTED: ${selected.name.toUpperCase()}` : 'NO SELECTION'}</span><span className="status-right">Call and Response · Milestone 1</span></footer>
+    <footer className="statusbar"><span><i className="status-dot" /> READY</span><span>{scene.objects.length} OBJECT{scene.objects.length === 1 ? '' : 'S'}</span><span>{selected ? `SELECTED: ${selected.name.toUpperCase()}` : 'NO SELECTION'}</span>{overlapAnalysis.errors.length > 0 && <span title={overlapAnalysis.errors.join('\n')}>OVERLAP CHECK ERROR</span>}{overlapAnalysis.limited && <span>OVERLAP CHECK LIMITED</span>}<span className="status-right">Call and Response · Stabilization</span></footer>
     {error && <div className="error-toast" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => useEditor.getState().setError(null)}>×</button></div>}
-    {contextMenu && <div className="context-menu" style={{ left: `${Math.max(0, Math.min(contextMenu.x, window.innerWidth - 190))}px`, top: `${Math.max(0, Math.min(contextMenu.y, window.innerHeight - 150))}px` }} onClick={event => event.stopPropagation()}>
+    {contextMenu && <div className="context-menu" style={{ left: `${Math.max(0, Math.min(contextMenu.x, window.innerWidth - 190))}px`, top: `${Math.max(0, Math.min(contextMenu.y, window.innerHeight - 220))}px` }} onClick={event => event.stopPropagation()}>
       <button disabled={!selectedIds.length} onClick={() => { groupSelected(); setContextMenu(null); }}>Group</button>
+      <button disabled={!canUngroup} onClick={() => { ungroupSelected(); setContextMenu(null); }}>Ungroup</button>
       <button disabled={!canBoolean} onClick={() => openBoolean('union')}>Union</button>
       <button disabled={!canBoolean} onClick={() => openBoolean('subtract')}>Subtract</button>
+      <button disabled={!canBoolean} onClick={() => openBoolean('intersect')}>Intersection</button>
     </div>}
-    {booleanPreview && <div className="boolean-preview-panel" onClick={event => event.stopPropagation()}><strong>{booleanPreview.kind === 'union' ? 'Union preview' : 'Subtract preview'}</strong><span>{scene.objects.find(object => object.id === booleanPreview.targetId)?.name} {booleanPreview.kind === 'union' ? '+' : '−'} {scene.objects.find(object => object.id === booleanPreview.cutterId)?.name}</span><small>Ghost geometry shows the resulting editable mesh.</small><div><button onClick={() => useEditor.getState().setBooleanPreview(null)}>Cancel</button><button className="primary" onClick={confirmBoolean}>Apply</button></div></div>}
+    {booleanPreview && <div className="boolean-preview-panel" onClick={event => event.stopPropagation()}><strong>{booleanPreview.kind === 'union' ? 'Union preview' : booleanPreview.kind === 'intersect' ? 'Intersection preview' : 'Subtract preview'}</strong><span>{scene.objects.find(object => object.id === booleanPreview.targetId)?.name} {booleanPreview.kind === 'union' ? '+' : booleanPreview.kind === 'intersect' ? '∩' : '−'} {scene.objects.find(object => object.id === booleanPreview.cutterId)?.name}</span><small>Ghost geometry shows the resulting indexed mesh at its local bounds-center pivot.</small><div><button onClick={() => useEditor.getState().setBooleanPreview(null)}>Cancel</button><button className="primary" onClick={confirmBoolean}>Apply</button></div></div>}
   </div>;
 }
