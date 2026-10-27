@@ -3,11 +3,14 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const resultsDir = resolve('test-results', 'browser');
+const baseUrl = (process.env.BROWSER_TEST_BASE_URL ?? 'http://localhost:5173').replace(/\/$/, '');
+const baseOrigin = new URL(baseUrl).origin;
 await mkdir(resultsDir, { recursive: true });
 const artifact = name => resolve(resultsDir, name);
 const editorUrl = (process.env.EDITOR_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '');
 const editorOrigin = new URL(editorUrl).origin;
 
+<<<<<<< Updated upstream
 try {
   const response = await fetch(editorUrl, { signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -17,25 +20,46 @@ try {
 
 const chromePath = process.env.CHROME_PATH?.trim();
 const chromeChannel = process.env.CHROME_CHANNEL?.trim() || 'chrome';
+=======
+const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+>>>>>>> Stashed changes
 let browser;
 try {
   browser = await chromium.launch({
     headless: true,
+<<<<<<< Updated upstream
     ...(chromePath ? { executablePath: chromePath } : { channel: chromeChannel }),
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
   });
 } catch (error) {
   throw new Error(`Could not launch Chrome. Install Google Chrome, set CHROME_PATH to its executable, or set CHROME_CHANNEL to a Playwright-supported channel. ${error instanceof Error ? error.message : ''}`);
+=======
+    ...(executablePath ? { executablePath } : { channel: 'chrome' }),
+    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-webgl'],
+  });
+} catch (error) {
+  throw new Error(
+    'Could not launch Chrome. Install Google Chrome or set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to its executable.',
+    { cause: error },
+  );
+>>>>>>> Stashed changes
 }
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
 const errors = [];
 const externalRequests = [];
 page.on('pageerror', error => errors.push(error.message));
 page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} ${message.location().url}`); });
+<<<<<<< Updated upstream
 page.on('request', request => { if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== editorOrigin) externalRequests.push(request.url()); });
 
 async function openEmpty() {
   await page.goto(`${editorUrl}/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
+=======
+page.on('request', request => { if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== baseOrigin) externalRequests.push(request.url()); });
+
+async function openEmpty() {
+  await page.goto(`${baseUrl}/?test=${Date.now()}-${Math.random()}`, { waitUntil: 'networkidle' });
+>>>>>>> Stashed changes
   await page.getByRole('button', { name: /create a box/i }).waitFor();
   if (!await page.getByText(/Your scene is empty/i).isVisible()) throw new Error('Fresh browser scenario did not start with an empty scene');
 }

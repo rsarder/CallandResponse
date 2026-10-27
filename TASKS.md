@@ -24,6 +24,10 @@ Milestone status: **complete — quality gate passed October 26, 2026**.
 - [x] **STAB-E2E-01** P0, owner Codex, deps all STAB tasks — Replace stale private-store browser assertions with user-visible workflows and downloaded JSON checks. Accepted in headless Chrome for shape editing, ellipsoids, history, grouping, round/chained Booleans, gizmo screenshots, mixed hierarchy persistence, and invalid-load safety.
 - [x] **STAB-DOC-01** P1, owner Codex, deps all STAB tasks — Document product features and usage in `README.md`, and geometry/hierarchy/pivot/CSG policies in `docs/DECISIONS.md`, `TECHNICAL_PLAN.md`, and `INTERACTION_SPEC.md`.
 
+## Post-stabilization tooling follow-up
+
+- [ ] **TEST-PORT-01** P1, owner Codex — Make the Playwright browser journey independent of Windows Chrome install paths and document same commands for macOS/Windows. Accept: uses Playwright's installed Chrome channel by default, supports executable/base-URL overrides, and is syntax-checked. Cross-platform browser execution remains to be confirmed on macOS.
+
 ### Stabilization verification
 
 - [x] **CHECK-01** `npm run typecheck` — web and shared strict TypeScript pass.
